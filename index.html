@@ -36,12 +36,50 @@
       background: var(--bg);
       image-rendering: pixelated;
       image-rendering: crisp-edges;
+      touch-action: none;
+    }
+    #touch-controls {
+      display: none;
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 140px;
+      pointer-events: none;
+    }
+    .touch-btn {
+      position: absolute;
+      pointer-events: auto;
+      border: 2px solid rgba(255,255,255,0.5);
+      border-radius: 12px;
+      background: rgba(0,0,0,0.2);
+      color: rgba(255,255,255,0.7);
+      font-size: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .touch-btn:active { background: rgba(255,255,255,0.3); }
+    #btn-left { bottom: 10px; left: 10px; width: 56px; height: 56px; }
+    #btn-right { bottom: 10px; left: 76px; width: 56px; height: 56px; }
+    #btn-jump { bottom: 10px; right: 10px; width: 64px; height: 64px; }
+    #btn-dash { bottom: 10px; right: 84px; width: 56px; height: 56px; }
+    @media (pointer: coarse) {
+      #touch-controls { display: block; }
     }
   </style>
 </head>
 <body>
   <div id="wrap">
     <canvas id="game" width="320" height="480"></canvas>
+    <div id="touch-controls">
+      <div class="touch-btn" id="btn-left">&larr;</div>
+      <div class="touch-btn" id="btn-right">&rarr;</div>
+      <div class="touch-btn" id="btn-dash">D</div>
+      <div class="touch-btn" id="btn-jump">&uarr;</div>
+    </div>
   </div>
 
   <script>
@@ -309,16 +347,18 @@
           }
         }
 
+        const usedTiles = new Set();
         for (let gx = 8; gx < levelW - 8; gx++) {
           const fy = floorHeights[gx];
           if (fy === null) continue;
-          if (gx > 12 && gx < levelW - 12 && rng() < spikeChance) {
+          const tileKey = `${gx},${fy - 1}`;
+          if (gx > 12 && gx < levelW - 12 && rng() < spikeChance && !usedTiles.has(tileKey)) {
             hazards.push({ x: gx, y: fy - 1 });
-          }
-          if (rng() < springChance) {
+            usedTiles.add(tileKey);
+          } else if (rng() < springChance && !usedTiles.has(tileKey)) {
             springs.push({ x: gx, y: fy - 1 });
-          }
-          if (rng() < enemyChance) {
+            usedTiles.add(tileKey);
+          } else if (rng() < enemyChance && !usedTiles.has(tileKey)) {
             enemies.push({
               x: gx * TILE_SIZE + 1,
               y: (fy - 1) * TILE_SIZE + 2,
@@ -326,9 +366,10 @@
               h: TILE_SIZE - 2,
               dir: rng() > 0.5 ? 1 : -1,
               speed: 45 + difficulty * 8,
-              minX: (gx - 3) * TILE_SIZE,
-              maxX: (gx + 3) * TILE_SIZE,
+              minX: (gx - 5) * TILE_SIZE,
+              maxX: (gx + 5) * TILE_SIZE,
             });
+            usedTiles.add(tileKey);
           }
           if (rng() < 0.3) {
             coins.push({ x: gx, y: fy - 2, collected: false });
@@ -657,6 +698,7 @@
         state = "levelComplete";
         levelTimer = 1.3;
         score += 500;
+        score += hp * 100; // Health bonus for surviving
       }
 
       function update(dt) {
@@ -805,8 +847,13 @@
           drawTile(deco.tile, deco.x * TILE_SIZE, deco.y * TILE_SIZE);
         }
 
-        for (let y = 0; y < GRID_H; y++) {
-          for (let x = 0; x < levelW; x++) {
+        const visMinX = Math.max(0, Math.floor(cameraX / TILE_SIZE) - 1);
+        const visMaxX = Math.min(levelW - 1, Math.ceil((cameraX + canvas.width) / TILE_SIZE) + 1);
+        const visMinY = Math.max(0, Math.floor(cameraY / TILE_SIZE) - 1);
+        const visMaxY = Math.min(GRID_H - 1, Math.ceil((cameraY + canvas.height) / TILE_SIZE) + 1);
+
+        for (let y = visMinY; y <= visMaxY; y++) {
+          for (let x = visMinX; x <= visMaxX; x++) {
             if (!solid[y][x]) continue;
             const top = !isSolidAt(x, y - 1);
             drawTile(top ? groundTop[x] : TILE_GROUND_FILL, x * TILE_SIZE, y * TILE_SIZE);
@@ -869,7 +916,15 @@
         if (player) {
           const blink = invuln > 0 && Math.floor(invuln * 10) % 2 === 0;
           if (!blink) {
-            drawTile(TILE_PLAYER, player.x, player.y);
+            if (player.facing < 0) {
+              ctx.save();
+              ctx.translate(player.x + player.w / 2, 0);
+              ctx.scale(-1, 1);
+              drawTile(TILE_PLAYER, -player.w / 2, player.y);
+              ctx.restore();
+            } else {
+              drawTile(TILE_PLAYER, player.x, player.y);
+            }
           }
         }
 
@@ -900,8 +955,22 @@
         const timeSec = Math.floor(levelElapsed);
         const min = Math.floor(timeSec / 60);
         const sec = timeSec % 60;
-        const timeText = `${min}${sec < 10 ? "0" : ""}${sec}`;
-        drawNumberTiles(timeText, hudX, hudY + 40);
+        const minStr = String(min);
+        const secStr = (sec < 10 ? "0" : "") + sec;
+        let tx = hudX;
+        drawNumberTiles(minStr, tx, hudY + 40);
+        tx += minStr.length * TILE_SIZE;
+        // Draw colon as two small dots
+        ctx.fillStyle = "#2b2b2b";
+        ctx.fillRect(tx + 5, hudY + 44, 3, 3);
+        ctx.fillRect(tx + 5, hudY + 52, 3, 3);
+        tx += 12;
+        drawNumberTiles(secStr, tx, hudY + 40);
+
+        // Level indicator
+        ctx.fillStyle = "#2b2b2b";
+        ctx.font = "10px monospace";
+        ctx.fillText("Lv " + (levelIndex + 1), canvas.width - 58, hudY + 50);
 
         for (let i = 0; i < maxHp; i++) {
           const tile = i < hp ? TILE_HEART_FULL : TILE_HEART_EMPTY;
@@ -916,11 +985,15 @@
         ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.fillStyle = "#fff";
+        ctx.textAlign = "center";
         ctx.font = "20px monospace";
-        ctx.fillText(title, 50, 210);
+        ctx.fillText(title, canvas.width / 2, 210);
         ctx.font = "12px monospace";
-        ctx.fillText(subtitle, 50, 230);
-        ctx.fillText("Move: Arrows/A-D | Jump: W/Up/Space | Dash: Shift/X", 22, 260);
+        ctx.fillText(subtitle, canvas.width / 2, 234);
+        ctx.font = "9px monospace";
+        ctx.fillText("Move: Arrows/A-D", canvas.width / 2, 258);
+        ctx.fillText("Jump: W/Up/Space | Dash: Shift/X", canvas.width / 2, 272);
+        ctx.textAlign = "left";
       }
 
       function step(dt) {
@@ -970,6 +1043,29 @@
       window.addEventListener("keydown", handleKeyDown);
       window.addEventListener("keyup", handleKeyUp);
       window.addEventListener("resize", setCanvasScale);
+
+      // Touch controls
+      const touchState = {};
+      function bindTouch(id, code) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener("touchstart", (e) => { e.preventDefault(); touchState[code] = true; keys[code] = true; pressed[code] = true; }, { passive: false });
+        el.addEventListener("touchend", (e) => { e.preventDefault(); touchState[code] = false; keys[code] = false; }, { passive: false });
+        el.addEventListener("touchcancel", (e) => { touchState[code] = false; keys[code] = false; });
+      }
+      bindTouch("btn-left", "ArrowLeft");
+      bindTouch("btn-right", "ArrowRight");
+      bindTouch("btn-jump", "Space");
+      bindTouch("btn-dash", "ShiftLeft");
+
+      // Tap anywhere on title/dead/gameComplete to start/restart
+      canvas.addEventListener("touchstart", (e) => {
+        if (state === "title" || state === "dead" || state === "gameComplete") {
+          e.preventDefault();
+          if (state === "title") { pressed["Space"] = true; }
+          else { pressed["KeyR"] = true; }
+        }
+      }, { passive: false });
 
       setupSDK();
       window.addEventListener("load", setupSDK);
