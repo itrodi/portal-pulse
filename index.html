@@ -1,0 +1,1027 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0" />
+  <title>Portal Pulse</title>
+  <script src="https://cdn.jsdelivr.net/npm/@remix-gg/sdk@latest/dist/index.min.js"></script>
+  <style>
+    :root {
+      --bg: #f6cfa7;
+      --frame: #2b2b2b;
+      --text: #2b2b2b;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at 20% 10%, #ffe6c7, var(--bg));
+      color: var(--text);
+      font-family: "Trebuchet MS", Tahoma, sans-serif;
+    }
+    #wrap {
+      position: relative;
+      padding: 10px;
+      border: 3px solid var(--frame);
+      background: rgba(255, 255, 255, 0.6);
+      border-radius: 8px;
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
+    }
+    canvas {
+      display: block;
+      background: var(--bg);
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="game" width="320" height="480"></canvas>
+  </div>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const canvas = document.getElementById("game");
+      const ctx = canvas.getContext("2d");
+      ctx.imageSmoothingEnabled = false;
+
+      const TILE_SIZE = 16; // 2x scale from 8px tiles
+      const GRID_H = 30;
+
+      const TILE_GROUND_FILL = 17;
+      const TILE_GROUND_TOP_ORANGE = 34;
+      const TILE_GROUND_TOP_PINK = 41;
+      const TILE_SPIKE = 110;
+      const TILE_COIN = 88;
+      const TILE_PLAYER = 105;
+      const TILE_ENEMY = 109;
+      const TILE_PORTAL = 120;
+      const TILE_PORTAL_LOCK = 67;
+      const TILE_FLAG = 73;
+      const TILE_SPRING = 15;
+      const TILE_HEART_FULL = 132;
+      const TILE_HEART_EMPTY = 134;
+      const TILE_STAR = 147;
+      const TILE_STAR_EMPTY = 149;
+      const TILE_CLOUD = 81;
+      const TILE_CLOUD_SMALL = 82;
+      const TILE_TREE_ORANGE = 31;
+      const TILE_TREE_PINK = 38;
+      const TILE_BUSH = 80;
+      const TILE_WATER_LEFT = 116;
+      const TILE_WATER_MID = 117;
+      const TILE_WATER_EDGE = 118;
+      const TILE_WATER_EDGE_RIGHT = 119;
+
+      const DIGIT_TILES = [135, 136, 137, 138, 139, 140, 141, 142, 143, 144];
+
+      const GRAVITY = 1100;
+      const MOVE_ACCEL = 900;
+      const MAX_SPEED = 180;
+      const FRICTION = 0.85;
+      const JUMP_SPEED = 480;
+      const COYOTE_TIME = 0.12;
+      const JUMP_BUFFER = 0.14;
+      const DASH_SPEED = 420;
+      const DASH_TIME = 0.14;
+      const SPRING_BOOST = 620;
+
+      const LEVELS = Array.from({ length: 10 }, (_, i) => ({
+        length: 360 + i * 40,
+        seed: 1200 + i * 97,
+        difficulty: 0.9 + i * 0.15,
+      }));
+
+      const keys = {};
+      const pressed = {};
+
+      let muted = false;
+      let levelW = 0;
+      let worldW = 0;
+      let worldH = GRID_H * TILE_SIZE;
+
+      let solid = [];
+      let groundTop = [];
+      let coins = [];
+      let hazards = [];
+      let enemies = [];
+      let springs = [];
+      let checkpoints = [];
+      let hearts = [];
+      let stars = [];
+      let decorBack = [];
+      let decorFront = [];
+      let portal = null;
+
+      let player = null;
+      let respawn = { x: 0, y: 0 };
+      let cameraX = 0;
+      let cameraY = 0;
+      let shakeTime = 0;
+      let shakeStrength = 0;
+
+      let score = 0;
+      let dashCharge = 0;
+      let levelIndex = 0;
+      let state = "loading";
+      let levelTimer = 0;
+      let levelElapsed = 0;
+      let gameOverSent = false;
+      let coinsCollected = 0;
+      let coinsTotal = 0;
+      let coinsNeeded = 0;
+
+      const maxHp = 3;
+      let hp = maxHp;
+      let invuln = 0;
+
+      let manualAdvance = false;
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function mulberry32(seed) {
+        let t = seed >>> 0;
+        return () => {
+          t += 0x6d2b79f5;
+          let r = Math.imul(t ^ (t >>> 15), 1 | t);
+          r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+          return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+
+      function rectsOverlap(a, b) {
+        return (
+          a.x < b.x + b.w &&
+          a.x + a.w > b.x &&
+          a.y < b.y + b.h &&
+          a.y + a.h > b.y
+        );
+      }
+
+      function haptic() {
+        if (window.RemixSDK && window.RemixSDK.hapticFeedback) {
+          window.RemixSDK.hapticFeedback();
+        }
+      }
+
+      function sendGameOver() {
+        if (gameOverSent) return;
+        gameOverSent = true;
+        if (window.RemixSDK && window.RemixSDK.singlePlayer && window.RemixSDK.singlePlayer.actions) {
+          window.RemixSDK.singlePlayer.actions.gameOver({ score });
+        }
+      }
+
+      function setupSDK() {
+        if (window.RemixSDK && window.RemixSDK.onPlayAgain) {
+          window.RemixSDK.onPlayAgain(() => {
+            resetGame();
+          });
+        }
+        if (window.RemixSDK && window.RemixSDK.onToggleMute) {
+          window.RemixSDK.onToggleMute((data) => {
+            muted = !!(data && data.isMuted);
+          });
+        }
+        if (window.FarcadeSDK && window.FarcadeSDK.onToggleMute) {
+          window.FarcadeSDK.onToggleMute((data) => {
+            muted = !!(data && data.isMuted);
+          });
+        }
+      }
+
+      function setCanvasScale() {
+        const scale = Math.min(
+          window.innerWidth / canvas.width,
+          window.innerHeight / canvas.height
+        );
+        canvas.style.width = Math.floor(canvas.width * scale) + "px";
+        canvas.style.height = Math.floor(canvas.height * scale) + "px";
+      }
+
+      function generateLevel(config) {
+        const rng = mulberry32(config.seed);
+        const difficulty = config.difficulty;
+        const gapChance = 0.06 + difficulty * 0.02;
+        const spikeChance = 0.12 + difficulty * 0.02;
+        const enemyChance = 0.06 + difficulty * 0.02;
+        const platformChance = 0.32 + difficulty * 0.05;
+        const springChance = 0.03 + difficulty * 0.01;
+        const heartChance = 0.015;
+        const starChance = 0.04;
+
+        levelW = config.length;
+        worldW = levelW * TILE_SIZE;
+        worldH = GRID_H * TILE_SIZE;
+
+        solid = Array.from({ length: GRID_H }, () => Array(levelW).fill(false));
+        groundTop = Array(levelW).fill(TILE_GROUND_TOP_ORANGE);
+        coins = [];
+        hazards = [];
+        enemies = [];
+        springs = [];
+        checkpoints = [];
+        hearts = [];
+        stars = [];
+        decorBack = [];
+        decorFront = [];
+        portal = null;
+
+        const baseY = 24;
+        const minY = 18;
+        const maxY = 25;
+        const floorHeights = Array(levelW).fill(baseY);
+        const gaps = [];
+        const starterCoins = [];
+
+        let x = 0;
+        let floorY = baseY;
+        while (x < levelW) {
+          if (x < 10 || x > levelW - 12) {
+            floorHeights[x] = baseY;
+            x++;
+            continue;
+          }
+          const roll = rng();
+          if (roll < gapChance) {
+            const gapLen = 2 + Math.floor(rng() * 3);
+            for (let i = 0; i < gapLen && x + i < levelW; i++) {
+              floorHeights[x + i] = null;
+            }
+            gaps.push({ x, len: gapLen });
+            x += gapLen;
+            continue;
+          }
+          if (roll < gapChance + 0.15) {
+            floorY += rng() < 0.5 ? -1 : 1;
+            floorY = clamp(floorY, minY, maxY);
+          }
+          floorHeights[x] = floorY;
+          x++;
+        }
+
+        const starterX = 18;
+        if (starterX + 2 < levelW && floorHeights[starterX] !== null) {
+          floorHeights[starterX] = null;
+          floorHeights[starterX + 1] = null;
+          gaps.push({ x: starterX, len: 2 });
+          if (floorHeights[starterX - 1] !== null) {
+            starterCoins.push({ x: starterX - 1, y: floorHeights[starterX - 1] - 2, collected: false });
+          }
+        }
+
+        for (let i = 0; i < levelW; i++) {
+          const themeBand = Math.floor(i / 40) % 2;
+          groundTop[i] = themeBand === 0 ? TILE_GROUND_TOP_ORANGE : TILE_GROUND_TOP_PINK;
+        }
+
+        for (let gx = 0; gx < levelW; gx++) {
+          const fy = floorHeights[gx];
+          if (fy === null) continue;
+          for (let y = fy; y < GRID_H; y++) {
+            solid[y][gx] = true;
+          }
+        }
+
+        for (let gx = 12; gx < levelW - 20; gx += 8 + Math.floor(rng() * 10)) {
+          if (rng() > platformChance) continue;
+          const base = floorHeights[gx] ?? baseY;
+          const height = 3 + Math.floor(rng() * 3);
+          const py = clamp(base - height, 6, baseY - 2);
+          const len = 4 + Math.floor(rng() * 6);
+          for (let px = gx; px < gx + len && px < levelW; px++) {
+            solid[py][px] = true;
+            if (rng() < 0.55) {
+              coins.push({ x: px, y: py - 1, collected: false });
+            }
+          }
+          if (rng() < starChance) {
+            stars.push({ x: gx + Math.floor(len / 2), y: py - 2, collected: false });
+          }
+        }
+
+        for (let gx = 8; gx < levelW - 8; gx++) {
+          const fy = floorHeights[gx];
+          if (fy === null) continue;
+          if (gx > 12 && gx < levelW - 12 && rng() < spikeChance) {
+            hazards.push({ x: gx, y: fy - 1 });
+          }
+          if (rng() < springChance) {
+            springs.push({ x: gx, y: fy - 1 });
+          }
+          if (rng() < enemyChance) {
+            enemies.push({
+              x: gx * TILE_SIZE + 1,
+              y: (fy - 1) * TILE_SIZE + 2,
+              w: TILE_SIZE - 2,
+              h: TILE_SIZE - 2,
+              dir: rng() > 0.5 ? 1 : -1,
+              speed: 45 + difficulty * 8,
+              minX: (gx - 3) * TILE_SIZE,
+              maxX: (gx + 3) * TILE_SIZE,
+            });
+          }
+          if (rng() < 0.3) {
+            coins.push({ x: gx, y: fy - 2, collected: false });
+          }
+          if (rng() < heartChance) {
+            hearts.push({ x: gx, y: fy - 3, collected: false });
+          }
+        }
+
+        for (const gap of gaps) {
+          for (let i = 0; i < gap.len && gap.x + i < levelW; i++) {
+            const wx = gap.x + i;
+            const tile = i === 0 ? TILE_WATER_LEFT : i === gap.len - 1 ? TILE_WATER_EDGE_RIGHT : TILE_WATER_MID;
+            decorBack.push({ x: wx, y: GRID_H - 2, tile });
+            decorBack.push({ x: wx, y: GRID_H - 1, tile: TILE_WATER_EDGE });
+          }
+        }
+
+        for (let cx = 50; cx < levelW - 40; cx += 60) {
+          let gx = cx;
+          while (gx < levelW && floorHeights[gx] === null) gx++;
+          if (gx >= levelW) break;
+          checkpoints.push({ x: gx, y: floorHeights[gx] - 1, active: false });
+        }
+
+        for (let dx = 12; dx < levelW; dx += 24 + Math.floor(rng() * 8)) {
+          const fy = floorHeights[dx];
+          if (fy === null) continue;
+          const treeTile = rng() > 0.5 ? TILE_TREE_ORANGE : TILE_TREE_PINK;
+          decorFront.push({ x: dx, y: fy - 2, tile: treeTile });
+          if (rng() < 0.4) {
+            decorFront.push({ x: dx + 2, y: fy - 1, tile: TILE_BUSH });
+          }
+        }
+
+        for (let sx = 8; sx < levelW; sx += 18 + Math.floor(rng() * 10)) {
+          const cloudTile = rng() > 0.5 ? TILE_CLOUD : TILE_CLOUD_SMALL;
+          decorBack.push({ x: sx, y: 2 + Math.floor(rng() * 4), tile: cloudTile });
+        }
+
+        let portalX = levelW - 6;
+        while (portalX > 10 && floorHeights[portalX] === null) portalX--;
+        portal = { x: portalX, y: floorHeights[portalX] - 1 };
+
+        const spawnX = 4;
+        const spawnY = (floorHeights[spawnX] ?? baseY) - 1;
+        respawn = { x: spawnX * TILE_SIZE + 1, y: spawnY * TILE_SIZE + 1 };
+
+        for (const starterCoin of starterCoins) {
+          coins.push(starterCoin);
+        }
+
+        coinsTotal = coins.length;
+        coinsCollected = 0;
+        coinsNeeded = Math.max(1, Math.floor(coinsTotal * 0.8));
+      }
+
+      function loadLevel(index) {
+        const config = LEVELS[index % LEVELS.length];
+        generateLevel(config);
+
+        player = {
+          x: respawn.x,
+          y: respawn.y,
+          w: TILE_SIZE - 2,
+          h: TILE_SIZE - 2,
+          vx: 0,
+          vy: 0,
+          onGround: false,
+          coyote: 0,
+          jumpBuffer: 0,
+          dashTimer: 0,
+          dashing: false,
+          facing: 1,
+        };
+
+        dashCharge = 0;
+        levelElapsed = 0;
+        hp = maxHp;
+        invuln = 0;
+        cameraX = 0;
+        cameraY = 0;
+      }
+
+      function resetGame() {
+        score = 0;
+        levelIndex = 0;
+        gameOverSent = false;
+        loadLevel(levelIndex);
+        state = "title";
+      }
+
+      function isSolidAt(tx, ty) {
+        if (ty < 0 || ty >= GRID_H || tx < 0 || tx >= levelW) return false;
+        return solid[ty][tx];
+      }
+
+      function rectCollidesSolid(rect) {
+        const left = Math.floor(rect.x / TILE_SIZE);
+        const right = Math.floor((rect.x + rect.w - 1) / TILE_SIZE);
+        const top = Math.floor(rect.y / TILE_SIZE);
+        const bottom = Math.floor((rect.y + rect.h - 1) / TILE_SIZE);
+        for (let y = top; y <= bottom; y++) {
+          for (let x = left; x <= right; x++) {
+            if (isSolidAt(x, y)) return true;
+          }
+        }
+        return false;
+      }
+
+      function moveX(dx) {
+        if (!dx) return;
+        player.x += dx;
+        if (rectCollidesSolid(player)) {
+          if (dx > 0) {
+            const tx = Math.floor((player.x + player.w - 1) / TILE_SIZE);
+            player.x = tx * TILE_SIZE - player.w - 0.01;
+          } else {
+            const tx = Math.floor(player.x / TILE_SIZE);
+            player.x = (tx + 1) * TILE_SIZE + 0.01;
+          }
+          player.vx = 0;
+        }
+      }
+
+      function moveY(dy) {
+        if (!dy) return;
+        player.y += dy;
+        if (rectCollidesSolid(player)) {
+          if (dy > 0) {
+            const ty = Math.floor((player.y + player.h - 1) / TILE_SIZE);
+            player.y = ty * TILE_SIZE - player.h - 0.01;
+            player.onGround = true;
+          } else {
+            const ty = Math.floor(player.y / TILE_SIZE);
+            player.y = (ty + 1) * TILE_SIZE + 0.01;
+          }
+          player.vy = 0;
+        }
+      }
+
+      function updateEnemies(dt) {
+        for (const enemy of enemies) {
+          enemy.x += enemy.dir * enemy.speed * dt;
+          if (enemy.x < enemy.minX) {
+            enemy.x = enemy.minX;
+            enemy.dir = 1;
+          }
+          if (enemy.x > enemy.maxX) {
+            enemy.x = enemy.maxX;
+            enemy.dir = -1;
+          }
+        }
+      }
+
+      function checkCoins() {
+        for (const coin of coins) {
+          if (coin.collected) continue;
+          const coinRect = {
+            x: coin.x * TILE_SIZE + 2,
+            y: coin.y * TILE_SIZE + 2,
+            w: TILE_SIZE - 4,
+            h: TILE_SIZE - 4,
+          };
+          if (rectsOverlap(player, coinRect)) {
+            coin.collected = true;
+            coinsCollected++;
+            score += 100;
+            dashCharge = 1;
+            haptic();
+          }
+        }
+      }
+
+      function checkStars() {
+        for (const star of stars) {
+          if (star.collected) continue;
+          const starRect = {
+            x: star.x * TILE_SIZE + 2,
+            y: star.y * TILE_SIZE + 2,
+            w: TILE_SIZE - 4,
+            h: TILE_SIZE - 4,
+          };
+          if (rectsOverlap(player, starRect)) {
+            star.collected = true;
+            score += 250;
+            if (hp < maxHp) hp++;
+            dashCharge = 1;
+            haptic();
+          }
+        }
+      }
+
+      function checkHearts() {
+        for (const heart of hearts) {
+          if (heart.collected) continue;
+          const heartRect = {
+            x: heart.x * TILE_SIZE + 2,
+            y: heart.y * TILE_SIZE + 2,
+            w: TILE_SIZE - 4,
+            h: TILE_SIZE - 4,
+          };
+          if (rectsOverlap(player, heartRect)) {
+            heart.collected = true;
+            if (hp < maxHp) hp++;
+            score += 150;
+            haptic();
+          }
+        }
+      }
+
+      function checkSprings() {
+        for (const spring of springs) {
+          const springRect = {
+            x: spring.x * TILE_SIZE + 2,
+            y: spring.y * TILE_SIZE + 4,
+            w: TILE_SIZE - 4,
+            h: TILE_SIZE - 6,
+          };
+          if (rectsOverlap(player, springRect) && player.vy >= 0) {
+            player.vy = -SPRING_BOOST;
+            player.onGround = false;
+            dashCharge = 1;
+            haptic();
+          }
+        }
+      }
+
+      function checkCheckpoints() {
+        for (const flag of checkpoints) {
+          const flagRect = {
+            x: flag.x * TILE_SIZE,
+            y: flag.y * TILE_SIZE,
+            w: TILE_SIZE,
+            h: TILE_SIZE,
+          };
+          if (rectsOverlap(player, flagRect)) {
+            if (!flag.active) {
+              flag.active = true;
+              respawn = { x: flag.x * TILE_SIZE + 1, y: (flag.y - 1) * TILE_SIZE + 1 };
+              score += 100;
+              haptic();
+            }
+          }
+        }
+      }
+
+      function takeDamage() {
+        if (invuln > 0 || state !== "playing") return;
+        hp -= 1;
+        invuln = 1.1;
+        shakeTime = 0.25;
+        shakeStrength = 4;
+        haptic();
+        if (hp <= 0) {
+          state = "dead";
+          sendGameOver();
+        } else {
+          player.x = respawn.x;
+          player.y = respawn.y;
+          player.vx = 0;
+          player.vy = 0;
+        }
+      }
+
+      function checkHazards() {
+        for (const hazard of hazards) {
+          const hazardRect = {
+            x: hazard.x * TILE_SIZE,
+            y: hazard.y * TILE_SIZE,
+            w: TILE_SIZE,
+            h: TILE_SIZE,
+          };
+          if (rectsOverlap(player, hazardRect)) {
+            takeDamage();
+            return;
+          }
+        }
+        for (let i = enemies.length - 1; i >= 0; i--) {
+          const enemy = enemies[i];
+          if (rectsOverlap(player, enemy)) {
+            if (player.dashing || player.vy > 120) {
+              enemies.splice(i, 1);
+              player.vy = -JUMP_SPEED * 0.45;
+              score += 150;
+              haptic();
+            } else {
+              takeDamage();
+              return;
+            }
+          }
+        }
+        if (player.y > worldH + TILE_SIZE) {
+          takeDamage();
+        }
+      }
+
+      function checkPortal() {
+        if (!portal) return false;
+        const portalRect = {
+          x: portal.x * TILE_SIZE,
+          y: portal.y * TILE_SIZE,
+          w: TILE_SIZE,
+          h: TILE_SIZE,
+        };
+        if (rectsOverlap(player, portalRect)) {
+          if (coinsCollected < coinsNeeded) {
+            shakeTime = 0.15;
+            shakeStrength = 2;
+            haptic();
+            return false;
+          }
+          haptic();
+          return true;
+        }
+        return false;
+      }
+
+      function completeLevel() {
+        if (levelIndex >= LEVELS.length - 1) {
+          state = "gameComplete";
+          haptic();
+          sendGameOver();
+          return;
+        }
+        state = "levelComplete";
+        levelTimer = 1.3;
+        score += 500;
+      }
+
+      function update(dt) {
+        if (state === "title") {
+          if (Object.keys(pressed).length > 0) {
+            state = "playing";
+          }
+          pressedClear();
+          return;
+        }
+
+        if (state === "playing") {
+          levelElapsed += dt;
+          if (invuln > 0) invuln -= dt;
+          if (shakeTime > 0) shakeTime -= dt;
+
+          const left = keys["ArrowLeft"] || keys["KeyA"];
+          const right = keys["ArrowRight"] || keys["KeyD"];
+          const jumpPressed = pressed["ArrowUp"] || pressed["KeyW"] || pressed["Space"];
+          const dashPressed = pressed["ShiftLeft"] || pressed["ShiftRight"] || pressed["KeyX"];
+
+          if (left) player.facing = -1;
+          if (right) player.facing = 1;
+
+          if (left) player.vx -= MOVE_ACCEL * dt;
+          if (right) player.vx += MOVE_ACCEL * dt;
+          if (!left && !right) player.vx *= FRICTION;
+          player.vx = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, player.vx));
+
+          if (player.onGround) {
+            player.coyote = COYOTE_TIME;
+          } else {
+            player.coyote -= dt;
+          }
+
+          if (jumpPressed) {
+            player.jumpBuffer = JUMP_BUFFER;
+          } else {
+            player.jumpBuffer -= dt;
+          }
+
+          if (player.jumpBuffer > 0 && player.coyote > 0) {
+            player.vy = -JUMP_SPEED;
+            player.onGround = false;
+            player.jumpBuffer = 0;
+            player.coyote = 0;
+            haptic();
+          }
+
+          if (dashPressed && dashCharge > 0 && !player.dashing) {
+            const dir = left ? -1 : right ? 1 : player.facing;
+            player.dashing = true;
+            player.dashTimer = DASH_TIME;
+            player.vy = 0;
+            player.vx = dir * DASH_SPEED;
+            dashCharge = 0;
+            haptic();
+          }
+
+          if (player.dashing) {
+            player.dashTimer -= dt;
+            if (player.dashTimer <= 0) {
+              player.dashing = false;
+            }
+          } else {
+            player.vy += GRAVITY * dt;
+          }
+
+          player.onGround = false;
+          moveX(player.vx * dt);
+          moveY(player.vy * dt);
+
+          updateEnemies(dt);
+          checkCoins();
+          checkStars();
+          checkHearts();
+          checkSprings();
+          checkCheckpoints();
+          checkHazards();
+          if (checkPortal()) {
+            completeLevel();
+          }
+        } else if (state === "levelComplete") {
+          levelTimer -= dt;
+          if (levelTimer <= 0) {
+            levelIndex++;
+            loadLevel(levelIndex);
+            state = "playing";
+          }
+        }
+
+        if (pressed["KeyR"] && (state === "dead" || state === "gameComplete")) {
+          resetGame();
+        }
+
+        pressedClear();
+      }
+
+      function pressedClear() {
+        for (const key in pressed) {
+          if (Object.prototype.hasOwnProperty.call(pressed, key)) {
+            delete pressed[key];
+          }
+        }
+      }
+
+      function updateCamera() {
+        if (!player) return;
+        const targetX = player.x + player.w / 2 - canvas.width / 2;
+        const targetY = player.y + player.h / 2 - canvas.height / 2;
+        const maxX = Math.max(0, worldW - canvas.width);
+        const maxY = Math.max(0, worldH - canvas.height);
+        cameraX += (clamp(targetX, 0, maxX) - cameraX) * 0.12;
+        cameraY += (clamp(targetY, 0, maxY) - cameraY) * 0.12;
+      }
+
+      function drawTile(index, x, y) {
+        const sx = (index % 15) * 8;
+        const sy = Math.floor(index / 15) * 8;
+        ctx.drawImage(tilemap, sx, sy, 8, 8, x, y, TILE_SIZE, TILE_SIZE);
+      }
+
+      function drawNumberTiles(value, x, y) {
+        const str = String(value);
+        for (let i = 0; i < str.length; i++) {
+          const digit = str.charCodeAt(i) - 48;
+          if (digit >= 0 && digit <= 9) {
+            drawTile(DIGIT_TILES[digit], x + i * TILE_SIZE, y);
+          }
+        }
+      }
+
+      function draw() {
+        ctx.fillStyle = "#f6cfa7";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (!tilemap.complete) return;
+
+        updateCamera();
+        const shake = shakeTime > 0 ? Math.sin(shakeTime * 60) * shakeStrength : 0;
+
+        ctx.save();
+        ctx.translate(-cameraX + shake, -cameraY + shake);
+
+        for (const deco of decorBack) {
+          drawTile(deco.tile, deco.x * TILE_SIZE, deco.y * TILE_SIZE);
+        }
+
+        for (let y = 0; y < GRID_H; y++) {
+          for (let x = 0; x < levelW; x++) {
+            if (!solid[y][x]) continue;
+            const top = !isSolidAt(x, y - 1);
+            drawTile(top ? groundTop[x] : TILE_GROUND_FILL, x * TILE_SIZE, y * TILE_SIZE);
+          }
+        }
+
+        for (const deco of decorFront) {
+          drawTile(deco.tile, deco.x * TILE_SIZE, deco.y * TILE_SIZE);
+        }
+
+        for (const spring of springs) {
+          drawTile(TILE_SPRING, spring.x * TILE_SIZE, spring.y * TILE_SIZE);
+        }
+
+        for (const hazard of hazards) {
+          drawTile(TILE_SPIKE, hazard.x * TILE_SIZE, hazard.y * TILE_SIZE);
+        }
+
+        for (const coin of coins) {
+          if (coin.collected) continue;
+          drawTile(TILE_COIN, coin.x * TILE_SIZE, coin.y * TILE_SIZE);
+        }
+
+        for (const star of stars) {
+          if (star.collected) continue;
+          drawTile(TILE_STAR, star.x * TILE_SIZE, star.y * TILE_SIZE);
+        }
+
+        for (const heart of hearts) {
+          if (heart.collected) continue;
+          drawTile(TILE_HEART_FULL, heart.x * TILE_SIZE, heart.y * TILE_SIZE);
+        }
+
+        for (const flag of checkpoints) {
+          drawTile(TILE_FLAG, flag.x * TILE_SIZE, flag.y * TILE_SIZE);
+        }
+
+        for (const enemy of enemies) {
+          drawTile(TILE_ENEMY, enemy.x, enemy.y);
+        }
+
+        if (portal) {
+          drawTile(TILE_PORTAL, portal.x * TILE_SIZE, portal.y * TILE_SIZE);
+          if (coinsCollected < coinsNeeded) {
+            drawTile(TILE_PORTAL_LOCK, portal.x * TILE_SIZE, (portal.y - 1) * TILE_SIZE);
+          } else {
+            ctx.fillStyle = "rgba(80, 160, 255, 0.25)";
+            ctx.beginPath();
+            ctx.arc(
+              portal.x * TILE_SIZE + TILE_SIZE / 2,
+              portal.y * TILE_SIZE + TILE_SIZE / 2,
+              TILE_SIZE * 0.7,
+              0,
+              Math.PI * 2
+            );
+            ctx.fill();
+          }
+        }
+
+        if (player) {
+          const blink = invuln > 0 && Math.floor(invuln * 10) % 2 === 0;
+          if (!blink) {
+            drawTile(TILE_PLAYER, player.x, player.y);
+          }
+        }
+
+        ctx.restore();
+
+        drawHud();
+
+        if (state === "title") {
+          drawOverlay("PORTAL PULSE", "Press any key to start");
+        } else if (state === "dead") {
+          drawOverlay("Game Over", "Press R or Play Again");
+        } else if (state === "gameComplete") {
+          drawOverlay("You Escaped!", "Press R or Play Again");
+        } else if (state === "levelComplete") {
+          drawOverlay("Level Clear", "Get Ready...");
+        }
+      }
+
+      function drawHud() {
+        const hudX = 8;
+        const hudY = 8;
+        drawNumberTiles(score, hudX, hudY);
+
+        const coinsLeft = Math.max(0, coinsNeeded - coinsCollected);
+        drawTile(TILE_COIN, hudX, hudY + 20);
+        drawNumberTiles(coinsLeft, hudX + 18, hudY + 20);
+
+        const timeSec = Math.floor(levelElapsed);
+        const min = Math.floor(timeSec / 60);
+        const sec = timeSec % 60;
+        const timeText = `${min}${sec < 10 ? "0" : ""}${sec}`;
+        drawNumberTiles(timeText, hudX, hudY + 40);
+
+        for (let i = 0; i < maxHp; i++) {
+          const tile = i < hp ? TILE_HEART_FULL : TILE_HEART_EMPTY;
+          drawTile(tile, canvas.width - (i + 1) * TILE_SIZE - 8, 8);
+        }
+
+        const dashTile = dashCharge > 0 ? TILE_STAR : TILE_STAR_EMPTY;
+        drawTile(dashTile, canvas.width - TILE_SIZE - 8, 28);
+      }
+
+      function drawOverlay(title, subtitle) {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = "#fff";
+        ctx.font = "20px monospace";
+        ctx.fillText(title, 50, 210);
+        ctx.font = "12px monospace";
+        ctx.fillText(subtitle, 50, 230);
+        ctx.fillText("Move: Arrows/A-D | Jump: W/Up/Space | Dash: Shift/X", 22, 260);
+      }
+
+      function step(dt) {
+        if (state !== "loading") {
+          update(dt);
+          draw();
+        }
+      }
+
+      function gameLoop(timestamp) {
+        if (!lastTime) lastTime = timestamp;
+        const dt = Math.min(0.033, (timestamp - lastTime) / 1000);
+        lastTime = timestamp;
+        if (!manualAdvance) {
+          step(dt);
+        }
+        requestAnimationFrame(gameLoop);
+      }
+
+      function toggleFullscreen() {
+        if (!document.fullscreenElement) {
+          canvas.requestFullscreen?.();
+        } else {
+          document.exitFullscreen?.();
+        }
+        setCanvasScale();
+      }
+
+      function handleKeyDown(e) {
+        if (!keys[e.code]) {
+          pressed[e.code] = true;
+        }
+        keys[e.code] = true;
+
+        if (e.code === "KeyF") {
+          toggleFullscreen();
+        }
+        if (e.code === "Escape" && document.fullscreenElement) {
+          document.exitFullscreen?.();
+        }
+      }
+
+      function handleKeyUp(e) {
+        keys[e.code] = false;
+      }
+
+      window.addEventListener("keydown", handleKeyDown);
+      window.addEventListener("keyup", handleKeyUp);
+      window.addEventListener("resize", setCanvasScale);
+
+      setupSDK();
+      window.addEventListener("load", setupSDK);
+
+      window.advanceTime = (ms) => {
+        manualAdvance = true;
+        const steps = Math.max(1, Math.round(ms / (1000 / 60)));
+        for (let i = 0; i < steps; i++) {
+          update(1 / 60);
+        }
+        draw();
+      };
+
+      window.render_game_to_text = () => {
+        const payload = {
+          mode: state,
+          level: levelIndex + 1,
+          levelCount: LEVELS.length,
+          coords: "origin top-left, +x right, +y down (pixels)",
+          player: player
+            ? {
+                x: Math.round(player.x),
+                y: Math.round(player.y),
+                vx: Number(player.vx.toFixed(2)),
+                vy: Number(player.vy.toFixed(2)),
+                onGround: player.onGround,
+              }
+            : null,
+          camera: { x: Math.round(cameraX), y: Math.round(cameraY) },
+          health: { current: hp, max: maxHp, invuln: Number(invuln.toFixed(2)) },
+          dash: { ready: dashCharge > 0, timer: Number(player?.dashTimer?.toFixed(2) ?? 0) },
+          coins: { collected: coinsCollected, needed: coinsNeeded, total: coinsTotal },
+          score,
+          portalLocked: coinsCollected < coinsNeeded,
+          time: Number(levelElapsed.toFixed(2)),
+          enemies: enemies.map((e) => ({ x: Math.round(e.x), y: Math.round(e.y), dir: e.dir })),
+        };
+        return JSON.stringify(payload);
+      };
+
+      const tilemap = new Image();
+      tilemap.src = "Default/Tilemap/tilemap_packed.png";
+
+      let lastTime = 0;
+
+      tilemap.onload = () => {
+        state = "title";
+        resetGame();
+        setCanvasScale();
+        requestAnimationFrame(gameLoop);
+      };
+    })();
+  </script>
+</body>
+</html>
