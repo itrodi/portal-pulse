@@ -90,36 +90,76 @@
       const ctx = canvas.getContext("2d");
       ctx.imageSmoothingEnabled = false;
 
-      const TILE_SIZE = 16; // 2x scale from 8px tiles
+      const TILE_SIZE = 16;
       const GRID_H = 30;
 
+      // === TILE CONSTANTS ===
+      // Ground
       const TILE_GROUND_FILL = 17;
       const TILE_GROUND_TOP_ORANGE = 34;
       const TILE_GROUND_TOP_PINK = 41;
+      const TILE_GROUND_TOP_PURPLE = 35;
+      const TILE_GROUND_TOP_LAVENDER = 42;
+      const TILE_GROUND_FILL_CAVE = 36;
+      const TILE_GROUND_TOP_LAVA_A = 45;
+      const TILE_GROUND_TOP_LAVA_B = 48;
+      const TILE_GROUND_FILL_LAVA = 46;
+
+      // Hazards
       const TILE_SPIKE = 110;
+      const TILE_SAW = 111;
+
+      // Collectibles
       const TILE_COIN = 88;
+      const TILE_GEM_BLUE = 83;
+      const TILE_GEM_PINK = 84;
+      const TILE_GEM_RED = 85;
+
+      // Characters
       const TILE_PLAYER = 105;
+      const CHARACTERS = [105, 106, 107, 108];
+      const CHAR_NAMES = ["Blaze", "Frost", "Wave", "Leaf"];
+
+      // Enemies
       const TILE_ENEMY = 109;
+      const TILE_ENEMY_FLY = 91;
+      const TILE_ENEMY_FAST = 97;
+
+      // Structures
       const TILE_PORTAL = 120;
       const TILE_PORTAL_LOCK = 67;
       const TILE_FLAG = 73;
       const TILE_SPRING = 15;
+
+      // UI
       const TILE_HEART_FULL = 132;
       const TILE_HEART_EMPTY = 134;
       const TILE_STAR = 147;
       const TILE_STAR_EMPTY = 149;
+
+      // Decorations
       const TILE_CLOUD = 81;
       const TILE_CLOUD_SMALL = 82;
       const TILE_TREE_ORANGE = 31;
       const TILE_TREE_PINK = 38;
       const TILE_BUSH = 80;
+      const TILE_CRYSTAL_A = 98;
+      const TILE_CRYSTAL_B = 100;
+      const TILE_MUSHROOM = 89;
+      const TILE_TORCH = 99;
+
+      // Water/Lava
       const TILE_WATER_LEFT = 116;
       const TILE_WATER_MID = 117;
       const TILE_WATER_EDGE = 118;
       const TILE_WATER_EDGE_RIGHT = 119;
 
+      // Moving platform tile
+      const TILE_PLATFORM_BLOCK = 47;
+
       const DIGIT_TILES = [135, 136, 137, 138, 139, 140, 141, 142, 143, 144];
 
+      // === PHYSICS ===
       const GRAVITY = 1100;
       const MOVE_ACCEL = 900;
       const MAX_SPEED = 180;
@@ -131,15 +171,54 @@
       const DASH_TIME = 0.14;
       const SPRING_BOOST = 620;
 
-      const LEVELS = Array.from({ length: 10 }, (_, i) => ({
-        length: 360 + i * 40,
-        seed: 1200 + i * 97,
-        difficulty: 0.9 + i * 0.15,
-      }));
+      // === WORLD THEMES ===
+      const WORLDS = [
+        {
+          name: "Grasslands",
+          bg: "#f6cfa7",
+          groundTops: [TILE_GROUND_TOP_ORANGE, TILE_GROUND_TOP_PINK],
+          groundFill: TILE_GROUND_FILL,
+          trees: [TILE_TREE_ORANGE, TILE_TREE_PINK],
+          bush: TILE_BUSH,
+          gemTile: TILE_GEM_BLUE,
+        },
+        {
+          name: "Crystal Caves",
+          bg: "#c4b5e3",
+          groundTops: [TILE_GROUND_TOP_PURPLE, TILE_GROUND_TOP_LAVENDER],
+          groundFill: TILE_GROUND_FILL_CAVE,
+          trees: [TILE_CRYSTAL_A, TILE_CRYSTAL_B],
+          bush: TILE_GEM_PINK,
+          gemTile: TILE_GEM_PINK,
+        },
+        {
+          name: "Lava Realm",
+          bg: "#e8a88c",
+          groundTops: [TILE_GROUND_TOP_LAVA_A, TILE_GROUND_TOP_LAVA_B],
+          groundFill: TILE_GROUND_FILL_LAVA,
+          trees: [TILE_MUSHROOM, TILE_TORCH],
+          bush: TILE_MUSHROOM,
+          gemTile: TILE_GEM_RED,
+        },
+      ];
 
+      // === 30 LEVELS ===
+      const LEVELS = Array.from({ length: 30 }, (_, i) => {
+        const world = Math.floor(i / 10);
+        const lvlInWorld = i % 10;
+        return {
+          length: 360 + lvlInWorld * 45 + world * 30,
+          seed: 1200 + i * 97,
+          difficulty: 0.85 + i * 0.07,
+          world: world,
+        };
+      });
+
+      // === INPUT ===
       const keys = {};
       const pressed = {};
 
+      // === GAME STATE ===
       let muted = false;
       let levelW = 0;
       let worldW = 0;
@@ -157,6 +236,9 @@
       let decorBack = [];
       let decorFront = [];
       let portal = null;
+      let saws = [];
+      let gems = [];
+      let movingPlatforms = [];
 
       let player = null;
       let respawn = { x: 0, y: 0 };
@@ -175,13 +257,17 @@
       let coinsCollected = 0;
       let coinsTotal = 0;
       let coinsNeeded = 0;
+      let gameTime = 0;
 
       const maxHp = 3;
       let hp = maxHp;
       let invuln = 0;
 
       let manualAdvance = false;
+      let selectedChar = 0;
+      let charSelectBlink = 0;
 
+      // === UTILITY ===
       function clamp(value, min, max) {
         return Math.max(min, Math.min(max, value));
       }
@@ -246,23 +332,32 @@
         canvas.style.height = Math.floor(canvas.height * scale) + "px";
       }
 
+      // === LEVEL GENERATION ===
       function generateLevel(config) {
         const rng = mulberry32(config.seed);
         const difficulty = config.difficulty;
-        const gapChance = 0.06 + difficulty * 0.02;
-        const spikeChance = 0.12 + difficulty * 0.02;
-        const enemyChance = 0.06 + difficulty * 0.02;
-        const platformChance = 0.32 + difficulty * 0.05;
+        const worldIdx = config.world;
+        const world = WORLDS[worldIdx];
+
+        const gapChance = 0.06 + difficulty * 0.015;
+        const spikeChance = 0.10 + difficulty * 0.02;
+        const enemyChance = 0.05 + difficulty * 0.015;
+        const platformChance = 0.32 + difficulty * 0.04;
         const springChance = 0.03 + difficulty * 0.01;
         const heartChance = 0.015;
         const starChance = 0.04;
+        const sawChance = worldIdx >= 1 ? 0.02 + difficulty * 0.01 : 0.005;
+        const flyEnemyChance = worldIdx >= 1 ? 0.03 + difficulty * 0.01 : 0;
+        const fastEnemyChance = worldIdx >= 2 ? 0.03 + difficulty * 0.01 : 0.005;
+        const gemChance = 0.02 + worldIdx * 0.015;
+        const movPlatChance = 0.015 + worldIdx * 0.01;
 
         levelW = config.length;
         worldW = levelW * TILE_SIZE;
         worldH = GRID_H * TILE_SIZE;
 
         solid = Array.from({ length: GRID_H }, () => Array(levelW).fill(false));
-        groundTop = Array(levelW).fill(TILE_GROUND_TOP_ORANGE);
+        groundTop = Array(levelW).fill(world.groundTops[0]);
         coins = [];
         hazards = [];
         enemies = [];
@@ -273,6 +368,9 @@
         decorBack = [];
         decorFront = [];
         portal = null;
+        saws = [];
+        gems = [];
+        movingPlatforms = [];
 
         const baseY = 24;
         const minY = 18;
@@ -281,6 +379,7 @@
         const gaps = [];
         const starterCoins = [];
 
+        // Generate floor terrain
         let x = 0;
         let floorY = baseY;
         while (x < levelW) {
@@ -307,6 +406,7 @@
           x++;
         }
 
+        // Starter gap for teaching
         const starterX = 18;
         if (starterX + 2 < levelW && floorHeights[starterX] !== null) {
           floorHeights[starterX] = null;
@@ -317,11 +417,13 @@
           }
         }
 
+        // Theme bands for ground tops
         for (let i = 0; i < levelW; i++) {
           const themeBand = Math.floor(i / 40) % 2;
-          groundTop[i] = themeBand === 0 ? TILE_GROUND_TOP_ORANGE : TILE_GROUND_TOP_PINK;
+          groundTop[i] = world.groundTops[themeBand];
         }
 
+        // Fill solid ground
         for (let gx = 0; gx < levelW; gx++) {
           const fy = floorHeights[gx];
           if (fy === null) continue;
@@ -330,6 +432,7 @@
           }
         }
 
+        // Generate floating platforms with coins
         for (let gx = 12; gx < levelW - 20; gx += 8 + Math.floor(rng() * 10)) {
           if (rng() > platformChance) continue;
           const base = floorHeights[gx] ?? baseY;
@@ -345,20 +448,75 @@
           if (rng() < starChance) {
             stars.push({ x: gx + Math.floor(len / 2), y: py - 2, collected: false });
           }
+          // Gems on platforms
+          if (rng() < gemChance) {
+            gems.push({ x: gx + Math.floor(len / 2), y: py - 1, collected: false, tile: world.gemTile });
+          }
         }
 
+        // Ground-level entities with overlap prevention
         const usedTiles = new Set();
         for (let gx = 8; gx < levelW - 8; gx++) {
           const fy = floorHeights[gx];
           if (fy === null) continue;
           const tileKey = `${gx},${fy - 1}`;
+
           if (gx > 12 && gx < levelW - 12 && rng() < spikeChance && !usedTiles.has(tileKey)) {
             hazards.push({ x: gx, y: fy - 1 });
+            usedTiles.add(tileKey);
+          } else if (rng() < sawChance && !usedTiles.has(tileKey)) {
+            // Saw blade - moves horizontally
+            const sawMinX = Math.max(0, (gx - 4)) * TILE_SIZE;
+            const sawMaxX = Math.min(levelW - 1, (gx + 4)) * TILE_SIZE;
+            saws.push({
+              x: gx * TILE_SIZE,
+              y: (fy - 1) * TILE_SIZE,
+              dir: rng() > 0.5 ? 1 : -1,
+              speed: 50 + difficulty * 15,
+              minX: sawMinX,
+              maxX: sawMaxX,
+              angle: 0,
+            });
             usedTiles.add(tileKey);
           } else if (rng() < springChance && !usedTiles.has(tileKey)) {
             springs.push({ x: gx, y: fy - 1 });
             usedTiles.add(tileKey);
+          } else if (rng() < flyEnemyChance && !usedTiles.has(tileKey)) {
+            // Flying enemy - sine wave vertical movement
+            enemies.push({
+              x: gx * TILE_SIZE + 1,
+              y: (fy - 3) * TILE_SIZE + 2,
+              w: TILE_SIZE - 2,
+              h: TILE_SIZE - 2,
+              dir: rng() > 0.5 ? 1 : -1,
+              speed: 35 + difficulty * 6,
+              minX: (gx - 5) * TILE_SIZE,
+              maxX: (gx + 5) * TILE_SIZE,
+              type: "fly",
+              baseY: (fy - 3) * TILE_SIZE + 2,
+              flyTimer: rng() * Math.PI * 2,
+              flyAmplitude: 24 + rng() * 16,
+            });
+            usedTiles.add(tileKey);
+          } else if (rng() < fastEnemyChance && !usedTiles.has(tileKey)) {
+            // Fast enemy - wider patrol, faster
+            enemies.push({
+              x: gx * TILE_SIZE + 1,
+              y: (fy - 1) * TILE_SIZE + 2,
+              w: TILE_SIZE - 2,
+              h: TILE_SIZE - 2,
+              dir: rng() > 0.5 ? 1 : -1,
+              speed: 75 + difficulty * 12,
+              minX: (gx - 7) * TILE_SIZE,
+              maxX: (gx + 7) * TILE_SIZE,
+              type: "fast",
+              baseY: 0,
+              flyTimer: 0,
+              flyAmplitude: 0,
+            });
+            usedTiles.add(tileKey);
           } else if (rng() < enemyChance && !usedTiles.has(tileKey)) {
+            // Normal walking enemy
             enemies.push({
               x: gx * TILE_SIZE + 1,
               y: (fy - 1) * TILE_SIZE + 2,
@@ -368,6 +526,10 @@
               speed: 45 + difficulty * 8,
               minX: (gx - 5) * TILE_SIZE,
               maxX: (gx + 5) * TILE_SIZE,
+              type: "walk",
+              baseY: 0,
+              flyTimer: 0,
+              flyAmplitude: 0,
             });
             usedTiles.add(tileKey);
           }
@@ -379,6 +541,32 @@
           }
         }
 
+        // Moving platforms
+        for (let gx = 30; gx < levelW - 30; gx += 25 + Math.floor(rng() * 20)) {
+          if (rng() > movPlatChance) continue;
+          const base = floorHeights[gx] ?? baseY;
+          const py = clamp(base - 4 - Math.floor(rng() * 3), 8, baseY - 3);
+          const isVertical = rng() < 0.35;
+          movingPlatforms.push({
+            x: gx * TILE_SIZE,
+            y: py * TILE_SIZE,
+            w: 3 * TILE_SIZE,
+            h: TILE_SIZE,
+            dir: 1,
+            speed: 40 + difficulty * 10,
+            vertical: isVertical,
+            minX: (gx - 4) * TILE_SIZE,
+            maxX: (gx + 4) * TILE_SIZE,
+            minY: (py - 3) * TILE_SIZE,
+            maxY: (py + 3) * TILE_SIZE,
+            prevX: gx * TILE_SIZE,
+            prevY: py * TILE_SIZE,
+          });
+          // Coins above moving platforms
+          coins.push({ x: gx + 1, y: py - 1, collected: false });
+        }
+
+        // Water/lava in gaps
         for (const gap of gaps) {
           for (let i = 0; i < gap.len && gap.x + i < levelW; i++) {
             const wx = gap.x + i;
@@ -388,32 +576,38 @@
           }
         }
 
-        for (let cx = 50; cx < levelW - 40; cx += 60) {
+        // Checkpoints
+        for (let cx = 50; cx < levelW - 40; cx += 55) {
           let gx = cx;
           while (gx < levelW && floorHeights[gx] === null) gx++;
           if (gx >= levelW) break;
           checkpoints.push({ x: gx, y: floorHeights[gx] - 1, active: false });
         }
 
-        for (let dx = 12; dx < levelW; dx += 24 + Math.floor(rng() * 8)) {
+        // Trees/decorations (world-themed)
+        for (let dx = 12; dx < levelW; dx += 20 + Math.floor(rng() * 8)) {
           const fy = floorHeights[dx];
           if (fy === null) continue;
-          const treeTile = rng() > 0.5 ? TILE_TREE_ORANGE : TILE_TREE_PINK;
+          const treeTile = rng() > 0.5 ? world.trees[0] : world.trees[1];
           decorFront.push({ x: dx, y: fy - 2, tile: treeTile });
           if (rng() < 0.4) {
-            decorFront.push({ x: dx + 2, y: fy - 1, tile: TILE_BUSH });
+            decorFront.push({ x: dx + 2, y: fy - 1, tile: world.bush });
           }
         }
 
-        for (let sx = 8; sx < levelW; sx += 18 + Math.floor(rng() * 10)) {
+        // Clouds (all worlds, but different density)
+        const cloudSpacing = worldIdx === 1 ? 28 : 18;
+        for (let sx = 8; sx < levelW; sx += cloudSpacing + Math.floor(rng() * 10)) {
           const cloudTile = rng() > 0.5 ? TILE_CLOUD : TILE_CLOUD_SMALL;
           decorBack.push({ x: sx, y: 2 + Math.floor(rng() * 4), tile: cloudTile });
         }
 
+        // Portal
         let portalX = levelW - 6;
         while (portalX > 10 && floorHeights[portalX] === null) portalX--;
         portal = { x: portalX, y: floorHeights[portalX] - 1 };
 
+        // Spawn point
         const spawnX = 4;
         const spawnY = (floorHeights[spawnX] ?? baseY) - 1;
         respawn = { x: spawnX * TILE_SIZE + 1, y: spawnY * TILE_SIZE + 1 };
@@ -422,11 +616,12 @@
           coins.push(starterCoin);
         }
 
-        coinsTotal = coins.length;
+        coinsTotal = coins.length + gems.length;
         coinsCollected = 0;
-        coinsNeeded = Math.max(1, Math.floor(coinsTotal * 0.8));
+        coinsNeeded = Math.max(1, Math.floor(coinsTotal * 0.75));
       }
 
+      // === LEVEL MANAGEMENT ===
       function loadLevel(index) {
         const config = LEVELS[index % LEVELS.length];
         generateLevel(config);
@@ -444,6 +639,7 @@
           dashTimer: 0,
           dashing: false,
           facing: 1,
+          onPlatform: null,
         };
 
         dashCharge = 0;
@@ -462,6 +658,7 @@
         state = "title";
       }
 
+      // === COLLISION ===
       function isSolidAt(tx, ty) {
         if (ty < 0 || ty >= GRID_H || tx < 0 || tx >= levelW) return false;
         return solid[ty][tx];
@@ -478,6 +675,22 @@
           }
         }
         return false;
+      }
+
+      function rectOnMovingPlatform(rect) {
+        const feetY = rect.y + rect.h;
+        for (const plat of movingPlatforms) {
+          if (
+            rect.x + rect.w > plat.x &&
+            rect.x < plat.x + plat.w &&
+            feetY >= plat.y &&
+            feetY <= plat.y + 6 &&
+            rect.y < plat.y
+          ) {
+            return plat;
+          }
+        }
+        return null;
       }
 
       function moveX(dx) {
@@ -509,10 +722,25 @@
           }
           player.vy = 0;
         }
+        // Check moving platforms for landing
+        if (dy > 0 && !player.onGround) {
+          const plat = rectOnMovingPlatform(player);
+          if (plat) {
+            player.y = plat.y - player.h - 0.01;
+            player.vy = 0;
+            player.onGround = true;
+            player.onPlatform = plat;
+          }
+        }
       }
 
+      // === ENTITY UPDATES ===
       function updateEnemies(dt) {
         for (const enemy of enemies) {
+          if (enemy.type === "fly") {
+            enemy.flyTimer += dt * 2.5;
+            enemy.y = enemy.baseY + Math.sin(enemy.flyTimer) * enemy.flyAmplitude;
+          }
           enemy.x += enemy.dir * enemy.speed * dt;
           if (enemy.x < enemy.minX) {
             enemy.x = enemy.minX;
@@ -525,6 +753,39 @@
         }
       }
 
+      function updateSaws(dt) {
+        for (const saw of saws) {
+          saw.angle += dt * 8;
+          saw.x += saw.dir * saw.speed * dt;
+          if (saw.x < saw.minX) {
+            saw.x = saw.minX;
+            saw.dir = 1;
+          }
+          if (saw.x > saw.maxX) {
+            saw.x = saw.maxX;
+            saw.dir = -1;
+          }
+        }
+      }
+
+      function updateMovingPlatforms(dt) {
+        for (const plat of movingPlatforms) {
+          plat.prevX = plat.x;
+          plat.prevY = plat.y;
+
+          if (plat.vertical) {
+            plat.y += plat.dir * plat.speed * dt;
+            if (plat.y < plat.minY) { plat.y = plat.minY; plat.dir = 1; }
+            if (plat.y > plat.maxY) { plat.y = plat.maxY; plat.dir = -1; }
+          } else {
+            plat.x += plat.dir * plat.speed * dt;
+            if (plat.x < plat.minX) { plat.x = plat.minX; plat.dir = 1; }
+            if (plat.x > plat.maxX) { plat.x = plat.maxX; plat.dir = -1; }
+          }
+        }
+      }
+
+      // === COLLECTIBLE CHECKS ===
       function checkCoins() {
         for (const coin of coins) {
           if (coin.collected) continue;
@@ -538,6 +799,25 @@
             coin.collected = true;
             coinsCollected++;
             score += 100;
+            dashCharge = 1;
+            haptic();
+          }
+        }
+      }
+
+      function checkGems() {
+        for (const gem of gems) {
+          if (gem.collected) continue;
+          const gemRect = {
+            x: gem.x * TILE_SIZE + 2,
+            y: gem.y * TILE_SIZE + 2,
+            w: TILE_SIZE - 4,
+            h: TILE_SIZE - 4,
+          };
+          if (rectsOverlap(player, gemRect)) {
+            gem.collected = true;
+            coinsCollected++;
+            score += 250;
             dashCharge = 1;
             haptic();
           }
@@ -617,6 +897,7 @@
         }
       }
 
+      // === DAMAGE ===
       function takeDamage() {
         if (invuln > 0 || state !== "playing") return;
         hp -= 1;
@@ -636,6 +917,7 @@
       }
 
       function checkHazards() {
+        // Static spikes
         for (const hazard of hazards) {
           const hazardRect = {
             x: hazard.x * TILE_SIZE,
@@ -648,13 +930,27 @@
             return;
           }
         }
+        // Moving saw blades
+        for (const saw of saws) {
+          const sawRect = {
+            x: saw.x + 2,
+            y: saw.y + 2,
+            w: TILE_SIZE - 4,
+            h: TILE_SIZE - 4,
+          };
+          if (rectsOverlap(player, sawRect)) {
+            takeDamage();
+            return;
+          }
+        }
+        // Enemies
         for (let i = enemies.length - 1; i >= 0; i--) {
           const enemy = enemies[i];
           if (rectsOverlap(player, enemy)) {
             if (player.dashing || player.vy > 120) {
               enemies.splice(i, 1);
               player.vy = -JUMP_SPEED * 0.45;
-              score += 150;
+              score += enemy.type === "fast" ? 250 : enemy.type === "fly" ? 200 : 150;
               haptic();
             } else {
               takeDamage();
@@ -662,6 +958,7 @@
             }
           }
         }
+        // Fall death
         if (player.y > worldH + TILE_SIZE) {
           takeDamage();
         }
@@ -698,13 +995,34 @@
         state = "levelComplete";
         levelTimer = 1.3;
         score += 500;
-        score += hp * 100; // Health bonus for surviving
+        score += hp * 100;
       }
 
+      // === MAIN UPDATE ===
       function update(dt) {
+        gameTime += dt;
+
         if (state === "title") {
           if (Object.keys(pressed).length > 0) {
+            state = "charSelect";
+          }
+          pressedClear();
+          return;
+        }
+
+        if (state === "charSelect") {
+          charSelectBlink += dt;
+          if (pressed["ArrowLeft"] || pressed["KeyA"]) {
+            selectedChar = (selectedChar + CHARACTERS.length - 1) % CHARACTERS.length;
+            haptic();
+          }
+          if (pressed["ArrowRight"] || pressed["KeyD"]) {
+            selectedChar = (selectedChar + 1) % CHARACTERS.length;
+            haptic();
+          }
+          if (pressed["ArrowUp"] || pressed["KeyW"] || pressed["Space"] || pressed["Enter"]) {
             state = "playing";
+            haptic();
           }
           pressedClear();
           return;
@@ -767,12 +1085,28 @@
             player.vy += GRAVITY * dt;
           }
 
+          // Moving platforms update (before player movement)
+          updateMovingPlatforms(dt);
+
+          // Apply platform carry
+          player.onPlatform = null;
+          const ridingPlat = rectOnMovingPlatform(player);
+          if (ridingPlat && player.vy >= 0) {
+            const dx = ridingPlat.x - ridingPlat.prevX;
+            const dy = ridingPlat.y - ridingPlat.prevY;
+            player.x += dx;
+            player.y += dy;
+            player.onPlatform = ridingPlat;
+          }
+
           player.onGround = false;
           moveX(player.vx * dt);
           moveY(player.vy * dt);
 
           updateEnemies(dt);
+          updateSaws(dt);
           checkCoins();
+          checkGems();
           checkStars();
           checkHearts();
           checkSprings();
@@ -805,6 +1139,7 @@
         }
       }
 
+      // === CAMERA ===
       function updateCamera() {
         if (!player) return;
         const targetX = player.x + player.w / 2 - canvas.width / 2;
@@ -815,6 +1150,7 @@
         cameraY += (clamp(targetY, 0, maxY) - cameraY) * 0.12;
       }
 
+      // === RENDERING ===
       function drawTile(index, x, y) {
         const sx = (index % 15) * 8;
         const sy = Math.floor(index / 15) * 8;
@@ -831,8 +1167,14 @@
         }
       }
 
+      function getCurrentWorld() {
+        const config = LEVELS[levelIndex % LEVELS.length];
+        return WORLDS[config.world];
+      }
+
       function draw() {
-        ctx.fillStyle = "#f6cfa7";
+        const world = getCurrentWorld();
+        ctx.fillStyle = world.bg;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         if (!tilemap.complete) return;
@@ -843,58 +1185,101 @@
         ctx.save();
         ctx.translate(-cameraX + shake, -cameraY + shake);
 
+        // Background decorations
         for (const deco of decorBack) {
           drawTile(deco.tile, deco.x * TILE_SIZE, deco.y * TILE_SIZE);
         }
 
+        // Visible tile range for ground
         const visMinX = Math.max(0, Math.floor(cameraX / TILE_SIZE) - 1);
         const visMaxX = Math.min(levelW - 1, Math.ceil((cameraX + canvas.width) / TILE_SIZE) + 1);
         const visMinY = Math.max(0, Math.floor(cameraY / TILE_SIZE) - 1);
         const visMaxY = Math.min(GRID_H - 1, Math.ceil((cameraY + canvas.height) / TILE_SIZE) + 1);
 
+        const config = LEVELS[levelIndex % LEVELS.length];
+        const fillTile = world.groundFill;
+
         for (let y = visMinY; y <= visMaxY; y++) {
           for (let x = visMinX; x <= visMaxX; x++) {
             if (!solid[y][x]) continue;
             const top = !isSolidAt(x, y - 1);
-            drawTile(top ? groundTop[x] : TILE_GROUND_FILL, x * TILE_SIZE, y * TILE_SIZE);
+            drawTile(top ? groundTop[x] : fillTile, x * TILE_SIZE, y * TILE_SIZE);
           }
         }
 
+        // Foreground decorations
         for (const deco of decorFront) {
           drawTile(deco.tile, deco.x * TILE_SIZE, deco.y * TILE_SIZE);
         }
 
+        // Moving platforms
+        for (const plat of movingPlatforms) {
+          const tilesWide = Math.round(plat.w / TILE_SIZE);
+          for (let i = 0; i < tilesWide; i++) {
+            drawTile(TILE_PLATFORM_BLOCK, plat.x + i * TILE_SIZE, plat.y);
+          }
+        }
+
+        // Springs
         for (const spring of springs) {
           drawTile(TILE_SPRING, spring.x * TILE_SIZE, spring.y * TILE_SIZE);
         }
 
+        // Hazards (spikes)
         for (const hazard of hazards) {
           drawTile(TILE_SPIKE, hazard.x * TILE_SIZE, hazard.y * TILE_SIZE);
         }
 
+        // Saw blades (with rotation effect)
+        for (const saw of saws) {
+          ctx.save();
+          const cx = saw.x + TILE_SIZE / 2;
+          const cy = saw.y + TILE_SIZE / 2;
+          ctx.translate(cx, cy);
+          ctx.rotate(saw.angle);
+          drawTile(TILE_SAW, -TILE_SIZE / 2, -TILE_SIZE / 2);
+          ctx.restore();
+        }
+
+        // Coins
         for (const coin of coins) {
           if (coin.collected) continue;
           drawTile(TILE_COIN, coin.x * TILE_SIZE, coin.y * TILE_SIZE);
         }
 
+        // Gems (with subtle bob animation)
+        for (const gem of gems) {
+          if (gem.collected) continue;
+          const bob = Math.sin(gameTime * 3 + gem.x) * 2;
+          drawTile(gem.tile, gem.x * TILE_SIZE, gem.y * TILE_SIZE + bob);
+        }
+
+        // Stars
         for (const star of stars) {
           if (star.collected) continue;
           drawTile(TILE_STAR, star.x * TILE_SIZE, star.y * TILE_SIZE);
         }
 
+        // Hearts
         for (const heart of hearts) {
           if (heart.collected) continue;
           drawTile(TILE_HEART_FULL, heart.x * TILE_SIZE, heart.y * TILE_SIZE);
         }
 
+        // Checkpoints
         for (const flag of checkpoints) {
           drawTile(TILE_FLAG, flag.x * TILE_SIZE, flag.y * TILE_SIZE);
         }
 
+        // Enemies
         for (const enemy of enemies) {
-          drawTile(TILE_ENEMY, enemy.x, enemy.y);
+          let tile = TILE_ENEMY;
+          if (enemy.type === "fly") tile = TILE_ENEMY_FLY;
+          if (enemy.type === "fast") tile = TILE_ENEMY_FAST;
+          drawTile(tile, enemy.x, enemy.y);
         }
 
+        // Portal
         if (portal) {
           drawTile(TILE_PORTAL, portal.x * TILE_SIZE, portal.y * TILE_SIZE);
           if (coinsCollected < coinsNeeded) {
@@ -905,7 +1290,7 @@
             ctx.arc(
               portal.x * TILE_SIZE + TILE_SIZE / 2,
               portal.y * TILE_SIZE + TILE_SIZE / 2,
-              TILE_SIZE * 0.7,
+              TILE_SIZE * 0.7 + Math.sin(gameTime * 4) * 2,
               0,
               Math.PI * 2
             );
@@ -913,17 +1298,19 @@
           }
         }
 
+        // Player
         if (player) {
           const blink = invuln > 0 && Math.floor(invuln * 10) % 2 === 0;
           if (!blink) {
+            const charTile = CHARACTERS[selectedChar];
             if (player.facing < 0) {
               ctx.save();
               ctx.translate(player.x + player.w / 2, 0);
               ctx.scale(-1, 1);
-              drawTile(TILE_PLAYER, -player.w / 2, player.y);
+              drawTile(charTile, -player.w / 2, player.y);
               ctx.restore();
             } else {
-              drawTile(TILE_PLAYER, player.x, player.y);
+              drawTile(charTile, player.x, player.y);
             }
           }
         }
@@ -932,15 +1319,73 @@
 
         drawHud();
 
+        // Overlays
         if (state === "title") {
           drawOverlay("PORTAL PULSE", "Press any key to start");
+        } else if (state === "charSelect") {
+          drawCharSelect();
         } else if (state === "dead") {
           drawOverlay("Game Over", "Press R or Play Again");
         } else if (state === "gameComplete") {
-          drawOverlay("You Escaped!", "Press R or Play Again");
+          drawOverlay("You Escaped!", "All 30 levels cleared!");
         } else if (state === "levelComplete") {
-          drawOverlay("Level Clear", "Get Ready...");
+          const nextWorld = LEVELS[(levelIndex + 1) % LEVELS.length].world;
+          const currentWorld = LEVELS[levelIndex % LEVELS.length].world;
+          if (nextWorld !== currentWorld && levelIndex < LEVELS.length - 1) {
+            drawOverlay("World Clear!", WORLDS[nextWorld].name + " awaits...");
+          } else {
+            drawOverlay("Level Clear", "Get Ready...");
+          }
         }
+      }
+
+      function drawCharSelect() {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = "#fff";
+        ctx.textAlign = "center";
+        ctx.font = "16px monospace";
+        ctx.fillText("Choose Your Character", canvas.width / 2, 160);
+
+        // Draw 4 characters
+        const startX = (canvas.width - (4 * 40)) / 2 + 12;
+        const charY = 200;
+
+        for (let i = 0; i < CHARACTERS.length; i++) {
+          const cx = startX + i * 40;
+
+          // Selection highlight
+          if (i === selectedChar) {
+            ctx.fillStyle = "rgba(255, 255, 100, 0.3)";
+            ctx.fillRect(cx - 6, charY - 6, 28, 44);
+            ctx.strokeStyle = "#fff";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(cx - 6, charY - 6, 28, 44);
+
+            // Arrow indicator
+            const arrowBob = Math.sin(charSelectBlink * 5) * 2;
+            ctx.fillStyle = "#fff";
+            ctx.font = "12px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("\u25BC", cx + 7, charY - 10 + arrowBob);
+          }
+
+          drawTile(CHARACTERS[i], cx, charY);
+
+          // Character name
+          ctx.fillStyle = i === selectedChar ? "#fff" : "#aaa";
+          ctx.font = "8px monospace";
+          ctx.textAlign = "center";
+          ctx.fillText(CHAR_NAMES[i], cx + 8, charY + 30);
+        }
+
+        ctx.fillStyle = "#ccc";
+        ctx.font = "10px monospace";
+        ctx.textAlign = "center";
+        ctx.fillText("<  Arrow Keys to Select  >", canvas.width / 2, 280);
+        ctx.fillText("Jump / Space to Confirm", canvas.width / 2, 296);
+        ctx.textAlign = "left";
       }
 
       function drawHud() {
@@ -960,23 +1405,27 @@
         let tx = hudX;
         drawNumberTiles(minStr, tx, hudY + 40);
         tx += minStr.length * TILE_SIZE;
-        // Draw colon as two small dots
         ctx.fillStyle = "#2b2b2b";
         ctx.fillRect(tx + 5, hudY + 44, 3, 3);
         ctx.fillRect(tx + 5, hudY + 52, 3, 3);
         tx += 12;
         drawNumberTiles(secStr, tx, hudY + 40);
 
-        // Level indicator
+        // Level + world indicator
+        const world = getCurrentWorld();
         ctx.fillStyle = "#2b2b2b";
+        ctx.font = "9px monospace";
+        ctx.fillText(world.name, canvas.width - 80, hudY + 48);
         ctx.font = "10px monospace";
-        ctx.fillText("Lv " + (levelIndex + 1), canvas.width - 58, hudY + 50);
+        ctx.fillText("Lv " + (levelIndex + 1) + "/30", canvas.width - 56, hudY + 60);
 
+        // Hearts
         for (let i = 0; i < maxHp; i++) {
           const tile = i < hp ? TILE_HEART_FULL : TILE_HEART_EMPTY;
           drawTile(tile, canvas.width - (i + 1) * TILE_SIZE - 8, 8);
         }
 
+        // Dash indicator
         const dashTile = dashCharge > 0 ? TILE_STAR : TILE_STAR_EMPTY;
         drawTile(dashTile, canvas.width - TILE_SIZE - 8, 28);
       }
@@ -996,6 +1445,7 @@
         ctx.textAlign = "left";
       }
 
+      // === GAME LOOP ===
       function step(dt) {
         if (state !== "loading") {
           update(dt);
@@ -1022,6 +1472,7 @@
         setCanvasScale();
       }
 
+      // === INPUT HANDLERS ===
       function handleKeyDown(e) {
         if (!keys[e.code]) {
           pressed[e.code] = true;
@@ -1058,7 +1509,6 @@
       bindTouch("btn-jump", "Space");
       bindTouch("btn-dash", "ShiftLeft");
 
-      // Tap anywhere on title/dead/gameComplete to start/restart
       canvas.addEventListener("touchstart", (e) => {
         if (state === "title" || state === "dead" || state === "gameComplete") {
           e.preventDefault();
@@ -1067,9 +1517,11 @@
         }
       }, { passive: false });
 
+      // === SDK ===
       setupSDK();
       window.addEventListener("load", setupSDK);
 
+      // === DEBUG/TEST HOOKS ===
       window.advanceTime = (ms) => {
         manualAdvance = true;
         const steps = Math.max(1, Math.round(ms / (1000 / 60)));
@@ -1080,10 +1532,12 @@
       };
 
       window.render_game_to_text = () => {
+        const config = LEVELS[levelIndex % LEVELS.length];
         const payload = {
           mode: state,
           level: levelIndex + 1,
           levelCount: LEVELS.length,
+          world: WORLDS[config.world].name,
           coords: "origin top-left, +x right, +y down (pixels)",
           player: player
             ? {
@@ -1092,6 +1546,7 @@
                 vx: Number(player.vx.toFixed(2)),
                 vy: Number(player.vy.toFixed(2)),
                 onGround: player.onGround,
+                character: CHAR_NAMES[selectedChar],
               }
             : null,
           camera: { x: Math.round(cameraX), y: Math.round(cameraY) },
@@ -1101,11 +1556,15 @@
           score,
           portalLocked: coinsCollected < coinsNeeded,
           time: Number(levelElapsed.toFixed(2)),
-          enemies: enemies.map((e) => ({ x: Math.round(e.x), y: Math.round(e.y), dir: e.dir })),
+          enemies: enemies.map((e) => ({ x: Math.round(e.x), y: Math.round(e.y), dir: e.dir, type: e.type })),
+          saws: saws.length,
+          movingPlatforms: movingPlatforms.length,
+          gems: gems.filter((g) => !g.collected).length,
         };
         return JSON.stringify(payload);
       };
 
+      // === INIT ===
       const tilemap = new Image();
       tilemap.src = "Default/Tilemap/tilemap_packed.png";
 
