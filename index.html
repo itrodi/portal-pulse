@@ -41,31 +41,36 @@
     #touch-controls {
       display: none;
       position: absolute;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      height: 140px;
+      top: 0; left: 0; right: 0; bottom: 0;
       pointer-events: none;
     }
-    .touch-btn {
+    .touch-zone {
       position: absolute;
       pointer-events: auto;
-      border: 2px solid rgba(255,255,255,0.5);
-      border-radius: 12px;
-      background: rgba(0,0,0,0.2);
-      color: rgba(255,255,255,0.7);
-      font-size: 22px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
       user-select: none;
       -webkit-user-select: none;
     }
-    .touch-btn:active { background: rgba(255,255,255,0.3); }
-    #btn-left { bottom: 10px; left: 10px; width: 56px; height: 56px; }
-    #btn-right { bottom: 10px; left: 76px; width: 56px; height: 56px; }
-    #btn-jump { bottom: 10px; right: 10px; width: 64px; height: 64px; }
-    #btn-dash { bottom: 10px; right: 84px; width: 56px; height: 56px; }
+    #zone-left {
+      left: 0; bottom: 0; width: 35%; height: 55%;
+    }
+    #zone-right {
+      right: 0; bottom: 0; width: 35%; height: 55%;
+    }
+    #zone-jump {
+      left: 15%; right: 15%; bottom: 0; height: 55%;
+    }
+    .touch-hint {
+      position: absolute;
+      bottom: 8px;
+      color: rgba(255,255,255,0.35);
+      font: bold 11px monospace;
+      pointer-events: none;
+      text-align: center;
+    }
+    #hint-left { left: 8px; }
+    #hint-right { right: 8px; }
+    #hint-jump { left: 50%; transform: translateX(-50%); bottom: 46px; }
+    #hint-dash { left: 50%; transform: translateX(-50%); bottom: 28px; font-size: 9px; }
     @media (pointer: coarse) {
       #touch-controls { display: block; }
     }
@@ -75,10 +80,13 @@
   <div id="wrap">
     <canvas id="game" width="320" height="480"></canvas>
     <div id="touch-controls">
-      <div class="touch-btn" id="btn-left">&larr;</div>
-      <div class="touch-btn" id="btn-right">&rarr;</div>
-      <div class="touch-btn" id="btn-dash">D</div>
-      <div class="touch-btn" id="btn-jump">&uarr;</div>
+      <div class="touch-zone" id="zone-left"></div>
+      <div class="touch-zone" id="zone-jump"></div>
+      <div class="touch-zone" id="zone-right"></div>
+      <div class="touch-hint" id="hint-left">&larr; HOLD</div>
+      <div class="touch-hint" id="hint-right">HOLD &rarr;</div>
+      <div class="touch-hint" id="hint-jump">TAP = JUMP</div>
+      <div class="touch-hint" id="hint-dash">SWIPE = DASH</div>
     </div>
   </div>
 
@@ -1432,6 +1440,15 @@
         gameTime += dt;
         pollGamepad();
 
+        // Fade touch hints after a few seconds
+        if (touchHintTimer > 0) {
+          touchHintTimer -= dt;
+          if (touchHintTimer <= 0) {
+            const hints = document.querySelectorAll(".touch-hint");
+            hints.forEach(h => { h.style.transition = "opacity 1s"; h.style.opacity = "0"; });
+          }
+        }
+
         if (state === "title") {
           if (Object.keys(pressed).length > 0) {
             state = "charSelect";
@@ -2232,45 +2249,137 @@
       window.addEventListener("keyup", handleKeyUp);
       window.addEventListener("resize", setCanvasScale);
 
-      // Touch controls
-      const touchState = {};
-      function bindTouch(id, code) {
-        const el = document.getElementById(id);
-        if (!el) return;
-        el.addEventListener("touchstart", (e) => { e.preventDefault(); touchState[code] = true; keys[code] = true; pressed[code] = true; }, { passive: false });
-        el.addEventListener("touchend", (e) => { e.preventDefault(); touchState[code] = false; keys[code] = false; }, { passive: false });
-        el.addEventListener("touchcancel", (e) => { touchState[code] = false; keys[code] = false; });
-      }
-      bindTouch("btn-left", "ArrowLeft");
-      bindTouch("btn-right", "ArrowRight");
-      bindTouch("btn-jump", "Space");
-      bindTouch("btn-dash", "ShiftLeft");
+      // === GESTURE-BASED TOUCH CONTROLS ===
+      const activeTouches = {}; // id -> { startX, startY, zone, startTime }
+      let touchHintTimer = 5; // show hints for first 5 seconds
 
+      function getCanvasCoords(touch) {
+        const rect = canvas.getBoundingClientRect();
+        return {
+          x: (touch.clientX - rect.left) * (canvas.width / rect.width),
+          y: (touch.clientY - rect.top) * (canvas.height / rect.height),
+        };
+      }
+
+      // Zone touch handlers (hold to move)
+      const zoneLeft = document.getElementById("zone-left");
+      const zoneRight = document.getElementById("zone-right");
+      const zoneJump = document.getElementById("zone-jump");
+
+      if (zoneLeft) {
+        zoneLeft.addEventListener("touchstart", (e) => {
+          e.preventDefault();
+          if (!audioCtx) getAudioCtx();
+          keys["ArrowLeft"] = true;
+          for (const t of e.changedTouches) {
+            activeTouches[t.identifier] = { zone: "left", startX: t.clientX, startY: t.clientY, startTime: Date.now() };
+          }
+        }, { passive: false });
+        zoneLeft.addEventListener("touchend", (e) => {
+          e.preventDefault();
+          keys["ArrowLeft"] = false;
+          for (const t of e.changedTouches) delete activeTouches[t.identifier];
+        }, { passive: false });
+        zoneLeft.addEventListener("touchcancel", (e) => {
+          keys["ArrowLeft"] = false;
+          for (const t of e.changedTouches) delete activeTouches[t.identifier];
+        });
+      }
+
+      if (zoneRight) {
+        zoneRight.addEventListener("touchstart", (e) => {
+          e.preventDefault();
+          if (!audioCtx) getAudioCtx();
+          keys["ArrowRight"] = true;
+          for (const t of e.changedTouches) {
+            activeTouches[t.identifier] = { zone: "right", startX: t.clientX, startY: t.clientY, startTime: Date.now() };
+          }
+        }, { passive: false });
+        zoneRight.addEventListener("touchend", (e) => {
+          e.preventDefault();
+          keys["ArrowRight"] = false;
+          for (const t of e.changedTouches) delete activeTouches[t.identifier];
+        }, { passive: false });
+        zoneRight.addEventListener("touchcancel", (e) => {
+          keys["ArrowRight"] = false;
+          for (const t of e.changedTouches) delete activeTouches[t.identifier];
+        });
+      }
+
+      if (zoneJump) {
+        zoneJump.addEventListener("touchstart", (e) => {
+          e.preventDefault();
+          if (!audioCtx) getAudioCtx();
+          for (const t of e.changedTouches) {
+            activeTouches[t.identifier] = { zone: "jump", startX: t.clientX, startY: t.clientY, startTime: Date.now() };
+          }
+          // Tap = jump
+          pressed["Space"] = true;
+          keys["Space"] = true;
+        }, { passive: false });
+        zoneJump.addEventListener("touchmove", (e) => {
+          e.preventDefault();
+          for (const t of e.changedTouches) {
+            const info = activeTouches[t.identifier];
+            if (!info) continue;
+            const dx = t.clientX - info.startX;
+            const dy = t.clientY - info.startY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            // Swipe detection: >30px horizontal movement = dash
+            if (dist > 30 && Math.abs(dx) > Math.abs(dy) && !info.dashed) {
+              info.dashed = true;
+              pressed["ShiftLeft"] = true;
+              // Set facing based on swipe direction
+              if (dx > 0) { keys["ArrowRight"] = true; info.swipeDir = "right"; }
+              else { keys["ArrowLeft"] = true; info.swipeDir = "left"; }
+            }
+          }
+        }, { passive: false });
+        zoneJump.addEventListener("touchend", (e) => {
+          e.preventDefault();
+          keys["Space"] = false;
+          for (const t of e.changedTouches) {
+            const info = activeTouches[t.identifier];
+            if (info && info.swipeDir) {
+              if (info.swipeDir === "right") keys["ArrowRight"] = false;
+              else keys["ArrowLeft"] = false;
+            }
+            delete activeTouches[t.identifier];
+          }
+        }, { passive: false });
+        zoneJump.addEventListener("touchcancel", (e) => {
+          keys["Space"] = false;
+          for (const t of e.changedTouches) {
+            const info = activeTouches[t.identifier];
+            if (info && info.swipeDir) {
+              if (info.swipeDir === "right") keys["ArrowRight"] = false;
+              else keys["ArrowLeft"] = false;
+            }
+            delete activeTouches[t.identifier];
+          }
+        });
+      }
+
+      // Canvas-level touch for menu screens
       canvas.addEventListener("touchstart", (e) => {
         if (!audioCtx) getAudioCtx();
-        const rect = canvas.getBoundingClientRect();
-        const scaleX = canvas.width / rect.width;
-        const scaleY = canvas.height / rect.height;
-        const tx = (e.touches[0].clientX - rect.left) * scaleX;
-        const ty = (e.touches[0].clientY - rect.top) * scaleY;
+        const { x: tx, y: ty } = getCanvasCoords(e.touches[0]);
 
         if (state === "title") {
           e.preventDefault();
           pressed["Space"] = true;
         } else if (state === "charSelect") {
           e.preventDefault();
-          // Detect tap on character tiles
           const startX = (canvas.width - (4 * 40)) / 2 + 12;
           const charY = 200;
           for (let i = 0; i < 4; i++) {
             const cx = startX + i * 40;
-            if (tx >= cx - 8 && tx <= cx + 24 && ty >= charY - 10 && ty <= charY + 40) {
+            if (tx >= cx - 10 && tx <= cx + 26 && ty >= charY - 15 && ty <= charY + 45) {
               selectedChar = i;
               haptic();
             }
           }
-          // Detect tap on confirm area (below characters)
-          if (ty > 280 && ty < 320) {
+          if (ty > 275 && ty < 330) {
             pressed["Space"] = true;
           }
         } else if (state === "dead" || state === "gameComplete") {
@@ -2278,7 +2387,9 @@
           pressed["KeyR"] = true;
         } else if (state === "paused") {
           e.preventDefault();
-          pressed["Escape"] = true;
+          // Top half = resume, bottom half = restart
+          if (ty < canvas.height / 2) pressed["Escape"] = true;
+          else pressed["KeyR"] = true;
         }
       }, { passive: false });
 
