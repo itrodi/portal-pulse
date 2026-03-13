@@ -461,16 +461,28 @@
       }
 
       // === SAVE SYSTEM ===
-      const SAVE_KEY = "portal-pulse-save";
       function defaultSave() {
         return { highestLevel: 0, totalScore: 0, levelStars: Array(30).fill(0), levelTimes: Array(30).fill(99999) };
       }
-      function loadSave() {
-        try { return JSON.parse(localStorage.getItem(SAVE_KEY)) || defaultSave(); }
-        catch(e) { return defaultSave(); }
-      }
       function writeSave(data) {
-        try { localStorage.setItem(SAVE_KEY, JSON.stringify(data)); } catch(e) {}
+        try {
+          const sdk = window.FarcadeSDK || window.RemixSDK;
+          if (sdk && sdk.singlePlayer && sdk.singlePlayer.actions) {
+            sdk.singlePlayer.actions.saveGameState({ gameState: data });
+          }
+        } catch(e) {}
+      }
+      function loadSaveFromSDK() {
+        try {
+          const sdk = window.FarcadeSDK || window.RemixSDK;
+          if (sdk && sdk.singlePlayer && sdk.singlePlayer.getGameState) {
+            const result = sdk.singlePlayer.getGameState();
+            if (result && result.gameState) {
+              return Object.assign(defaultSave(), result.gameState);
+            }
+          }
+        } catch(e) {}
+        return defaultSave();
       }
       let saveData = defaultSave();
 
@@ -2327,7 +2339,7 @@
       let lastTime = 0;
 
       tilemap.onload = () => {
-        saveData = loadSave();
+        saveData = loadSaveFromSDK();
         state = "title";
         resetGame();
         setCanvasScale();
