@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Portal Pulse</title>
   <script src="https://cdn.jsdelivr.net/npm/@remix-gg/sdk@latest/dist/index.min.js"></script>
   <style>
@@ -11,25 +11,26 @@
       --frame: #2b2b2b;
       --text: #2b2b2b;
     }
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
       width: 100%;
       height: 100%;
-      margin: 0;
+      overflow: hidden;
       display: flex;
       align-items: center;
       justify-content: center;
-      background: radial-gradient(circle at 20% 10%, #ffe6c7, var(--bg));
+      background: #1a1a2e;
       color: var(--text);
       font-family: "Trebuchet MS", Tahoma, sans-serif;
     }
     #wrap {
       position: relative;
-      padding: 10px;
-      border: 3px solid var(--frame);
-      background: rgba(255, 255, 255, 0.6);
-      border-radius: 8px;
-      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #1a1a2e;
     }
     canvas {
       display: block;
@@ -274,6 +275,10 @@
       let manualAdvance = false;
       let selectedChar = 0;
       let charSelectBlink = 0;
+      let titlePage = 0; // 0=main, 1=how-to-play
+      let titleMenuSel = 0; // 0=play, 1=levels/howto, 2=howto
+      let levelSelectCursor = 0;
+      let scoreAtLevelStart = 0;
 
       // Boss state
       let boss = null;
@@ -491,36 +496,41 @@
       function sendGameOver() {
         if (gameOverSent) return;
         gameOverSent = true;
-        if (window.RemixSDK && window.RemixSDK.singlePlayer && window.RemixSDK.singlePlayer.actions) {
-          window.RemixSDK.singlePlayer.actions.gameOver({ score });
+        // Save final state
+        saveData.totalScore = Math.max(saveData.totalScore, score);
+        writeSave(saveData);
+        // Notify SDK
+        const sdk = window.FarcadeSDK || window.RemixSDK;
+        if (sdk && sdk.singlePlayer && sdk.singlePlayer.actions) {
+          sdk.singlePlayer.actions.gameOver({ score });
         }
       }
 
       function setupSDK() {
-        if (window.RemixSDK && window.RemixSDK.onPlayAgain) {
-          window.RemixSDK.onPlayAgain(() => {
-            resetGame();
-          });
+        const sdk = window.FarcadeSDK || window.RemixSDK;
+        if (sdk && sdk.onPlayAgain) {
+          sdk.onPlayAgain(() => { resetGame(); });
         }
-        if (window.RemixSDK && window.RemixSDK.onToggleMute) {
-          window.RemixSDK.onToggleMute((data) => {
-            muted = !!(data && data.isMuted);
-          });
-        }
-        if (window.FarcadeSDK && window.FarcadeSDK.onToggleMute) {
-          window.FarcadeSDK.onToggleMute((data) => {
-            muted = !!(data && data.isMuted);
-          });
+        if (sdk && sdk.onToggleMute) {
+          sdk.onToggleMute((data) => { muted = !!(data && data.isMuted); if (muted) stopMusic(); });
         }
       }
 
       function setCanvasScale() {
-        const scale = Math.min(
-          window.innerWidth / canvas.width,
-          window.innerHeight / canvas.height
-        );
-        canvas.style.width = Math.floor(canvas.width * scale) + "px";
-        canvas.style.height = Math.floor(canvas.height * scale) + "px";
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        // 2:3 aspect ratio, fill screen in portrait
+        const targetRatio = 2 / 3;
+        let w, h;
+        if (vw / vh < targetRatio) {
+          w = vw;
+          h = Math.floor(vw / targetRatio);
+        } else {
+          h = vh;
+          w = Math.floor(vh * targetRatio);
+        }
+        canvas.style.width = w + "px";
+        canvas.style.height = h + "px";
       }
 
       // === LEVEL GENERATION ===
@@ -1026,6 +1036,10 @@
         score = 0;
         levelIndex = 0;
         gameOverSent = false;
+        titlePage = 0;
+        titleMenuSel = 0;
+        stopMusic();
+        saveData = loadSaveFromSDK();
         loadLevel(levelIndex);
         state = "title";
       }
@@ -1442,8 +1456,67 @@
         pollGamepad();
 
         if (state === "title") {
-          if (Object.keys(pressed).length > 0) {
+          if (titlePage === 0) {
+            // Main menu: 3 options - Play, How to Play, Continue (if saved progress)
+            if (pressed["ArrowUp"] || pressed["KeyW"] || pressed["GamepadA"]) {
+              // Cycle through options handled by titleMenuSel
+            }
+            if (pressed["Space"] || pressed["Enter"] || pressed["GamepadA"]) {
+              if (titleMenuSel === 0) {
+                // New Game / Play
+                state = "charSelect";
+                levelIndex = 0;
+              } else if (titleMenuSel === 1 && saveData.highestLevel > 0) {
+                // Level Select
+                state = "levelSelect";
+                levelSelectCursor = Math.min(saveData.highestLevel, LEVELS.length - 1);
+              } else {
+                // How to Play
+                titlePage = 1;
+              }
+              haptic();
+            }
+            if (pressed["ArrowDown"] || pressed["KeyS"]) {
+              const maxOpt = saveData.highestLevel > 0 ? 2 : 1;
+              titleMenuSel = (titleMenuSel + 1) % (maxOpt + 1);
+              haptic();
+            }
+            if (pressed["ArrowUp"] || pressed["KeyW"]) {
+              const maxOpt = saveData.highestLevel > 0 ? 2 : 1;
+              titleMenuSel = (titleMenuSel + maxOpt) % (maxOpt + 1);
+              haptic();
+            }
+          } else {
+            // How-to-play page: any key goes back
+            if (Object.keys(pressed).length > 0) {
+              titlePage = 0;
+              haptic();
+            }
+          }
+          pressedClear();
+          return;
+        }
+
+        if (state === "levelSelect") {
+          if (pressed["ArrowLeft"] || pressed["KeyA"] || pressed["GamepadLeft"]) {
+            levelSelectCursor = Math.max(0, levelSelectCursor - 1); haptic();
+          }
+          if (pressed["ArrowRight"] || pressed["KeyD"] || pressed["GamepadRight"]) {
+            levelSelectCursor = Math.min(saveData.highestLevel, Math.min(LEVELS.length - 1, levelSelectCursor + 1)); haptic();
+          }
+          if (pressed["ArrowUp"] || pressed["KeyW"]) {
+            levelSelectCursor = Math.max(0, levelSelectCursor - 10); haptic();
+          }
+          if (pressed["ArrowDown"] || pressed["KeyS"]) {
+            levelSelectCursor = Math.min(saveData.highestLevel, Math.min(LEVELS.length - 1, levelSelectCursor + 10)); haptic();
+          }
+          if (pressed["Space"] || pressed["Enter"] || pressed["GamepadA"]) {
+            levelIndex = levelSelectCursor;
             state = "charSelect";
+            haptic();
+          }
+          if (pressed["Escape"]) {
+            state = "title"; haptic();
           }
           pressedClear();
           return;
@@ -1460,8 +1533,13 @@
             haptic();
           }
           if (pressed["ArrowUp"] || pressed["KeyW"] || pressed["Space"] || pressed["Enter"] || pressed["GamepadA"]) {
+            scoreAtLevelStart = score;
+            loadLevel(levelIndex);
             state = "playing";
             haptic();
+          }
+          if (pressed["Escape"]) {
+            state = "title"; haptic();
           }
           pressedClear();
           return;
@@ -1984,7 +2062,9 @@
 
         // Overlays
         if (state === "title") {
-          drawOverlay("PORTAL PULSE", "Press any key to start");
+          drawTitleScreen();
+        } else if (state === "levelSelect") {
+          drawLevelSelect();
         } else if (state === "charSelect") {
           drawCharSelect();
         } else if (state === "paused") {
@@ -2000,9 +2080,36 @@
           ctx.textAlign = "left";
         } else if (state === "dead") {
           stopMusic();
-          drawOverlay("Game Over", "Press R or Play Again");
+          ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = "#ff6644";
+          ctx.textAlign = "center";
+          ctx.font = "bold 20px monospace";
+          ctx.fillText("GAME OVER", canvas.width/2, 180);
+          ctx.fillStyle = "#fff";
+          ctx.font = "12px monospace";
+          ctx.fillText("Score: " + score, canvas.width/2, 210);
+          ctx.fillText("Level: " + (levelIndex + 1) + "/30", canvas.width/2, 230);
+          ctx.fillStyle = "#aaa";
+          ctx.font = "10px monospace";
+          ctx.fillText("Tap or press R to continue", canvas.width/2, 270);
+          ctx.textAlign = "left";
         } else if (state === "gameComplete") {
-          drawOverlay("You Escaped!", "All 30 levels cleared!");
+          stopMusic();
+          ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = "#ffdd66";
+          ctx.textAlign = "center";
+          ctx.font = "bold 18px monospace";
+          ctx.fillText("YOU ESCAPED!", canvas.width/2, 170);
+          ctx.fillStyle = "#fff";
+          ctx.font = "12px monospace";
+          ctx.fillText("All 30 levels cleared!", canvas.width/2, 200);
+          ctx.fillText("Final Score: " + score, canvas.width/2, 225);
+          ctx.fillStyle = "#aaa";
+          ctx.font = "10px monospace";
+          ctx.fillText("Tap or press R to play again", canvas.width/2, 270);
+          ctx.textAlign = "left";
         } else if (state === "levelComplete") {
           const nextWorld = LEVELS[(levelIndex + 1) % LEVELS.length].world;
           const currentWorld = LEVELS[levelIndex % LEVELS.length].world;
@@ -2012,6 +2119,185 @@
             drawOverlay("Level Clear", "Get Ready...");
           }
         }
+      }
+
+      function drawTitleScreen() {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        const cx = canvas.width / 2;
+
+        if (titlePage === 0) {
+          // Title
+          ctx.fillStyle = "#ffdd66";
+          ctx.textAlign = "center";
+          ctx.font = "bold 22px monospace";
+          ctx.fillText("PORTAL PULSE", cx, 100);
+
+          // Animated character parade
+          for (let i = 0; i < 4; i++) {
+            const px = cx - 40 + i * 24;
+            const bob = Math.sin(gameTime * 3 + i * 1.5) * 3;
+            drawTile(CHARACTERS[i], px, 120 + bob);
+          }
+
+          // Menu options
+          const menuY = 180;
+          const options = ["PLAY"];
+          if (saveData.highestLevel > 0) options.push("LEVELS (Lv " + (saveData.highestLevel + 1) + ")");
+          options.push("HOW TO PLAY");
+
+          for (let i = 0; i < options.length; i++) {
+            const y = menuY + i * 32;
+            const sel = (i === titleMenuSel);
+            // Button background
+            ctx.fillStyle = sel ? "rgba(255, 220, 80, 0.3)" : "rgba(255, 255, 255, 0.08)";
+            const bw = 180;
+            ctx.fillRect(cx - bw/2, y - 10, bw, 24);
+            if (sel) {
+              ctx.strokeStyle = "#ffdd66";
+              ctx.lineWidth = 2;
+              ctx.strokeRect(cx - bw/2, y - 10, bw, 24);
+              // Arrow
+              const arrowBob = Math.sin(gameTime * 5) * 2;
+              ctx.fillStyle = "#ffdd66";
+              ctx.font = "12px monospace";
+              ctx.fillText("\u25B6", cx - bw/2 - 12 + arrowBob, y + 5);
+            }
+            ctx.fillStyle = sel ? "#fff" : "#aaa";
+            ctx.font = sel ? "bold 12px monospace" : "12px monospace";
+            ctx.fillText(options[i], cx, y + 5);
+          }
+
+          ctx.fillStyle = "#888";
+          ctx.font = "8px monospace";
+          ctx.fillText("Use Up/Down to navigate, Space to select", cx, canvas.height - 30);
+          ctx.textAlign = "left";
+        } else {
+          // How to Play page
+          ctx.fillStyle = "#ffdd66";
+          ctx.textAlign = "center";
+          ctx.font = "bold 16px monospace";
+          ctx.fillText("HOW TO PLAY", cx, 60);
+
+          ctx.font = "10px monospace";
+          const lines = [
+            "",
+            { icon: TILE_PLAYER, text: "You are a runner escaping" },
+            { icon: null, text: "through 30 portal levels!" },
+            "",
+            { icon: TILE_COIN, text: "Collect coins to unlock" },
+            { icon: TILE_PORTAL, text: "the portal at the end" },
+            "",
+            { icon: TILE_SPIKE, text: "Avoid spikes and saws!" },
+            { icon: TILE_ENEMY, text: "Stomp enemies from above" },
+            "",
+            { icon: TILE_SPRING, text: "Springs bounce you high" },
+            { icon: TILE_FLAG, text: "Flags save your progress" },
+            { icon: TILE_HEART_FULL, text: "Hearts restore health" },
+            "",
+            { icon: null, text: "--- CONTROLS ---" },
+            { icon: null, text: "Move: Arrow Keys / A,D" },
+            { icon: null, text: "Jump: Space / W / Up" },
+            { icon: null, text: "Dash: Shift / X" },
+            { icon: null, text: "Pause: ESC" },
+            "",
+            { icon: null, text: "Wall Jump: Press into wall + Jump" },
+          ];
+
+          let ly = 85;
+          for (const line of lines) {
+            if (line === "") { ly += 8; continue; }
+            if (line.icon !== null && line.icon !== undefined) {
+              drawTile(line.icon, cx - 80, ly - 6);
+              ctx.fillStyle = "#ddd";
+              ctx.textAlign = "left";
+              ctx.fillText(line.text, cx - 58, ly + 4);
+            } else {
+              ctx.fillStyle = line.text.startsWith("---") ? "#ffdd66" : "#ccc";
+              ctx.textAlign = "center";
+              ctx.fillText(line.text, cx, ly + 4);
+            }
+            ly += 16;
+          }
+
+          ctx.fillStyle = "#888";
+          ctx.font = "9px monospace";
+          ctx.textAlign = "center";
+          ctx.fillText("Press any key to go back", cx, canvas.height - 20);
+          ctx.textAlign = "left";
+        }
+      }
+
+      function drawLevelSelect() {
+        ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        const cx = canvas.width / 2;
+
+        ctx.fillStyle = "#ffdd66";
+        ctx.textAlign = "center";
+        ctx.font = "bold 14px monospace";
+        ctx.fillText("SELECT LEVEL", cx, 40);
+
+        // 3 worlds, 10 levels each
+        for (let w = 0; w < 3; w++) {
+          const wy = 65 + w * 130;
+          // World name
+          ctx.fillStyle = ["#88cc66", "#aa88dd", "#ee8866"][w];
+          ctx.font = "bold 10px monospace";
+          ctx.fillText(WORLDS[w].name, cx, wy);
+
+          // Level circles - 5 per row, 2 rows
+          for (let l = 0; l < 10; l++) {
+            const idx = w * 10 + l;
+            const col = l % 5;
+            const row = Math.floor(l / 5);
+            const lx = cx - 75 + col * 38;
+            const ly = wy + 16 + row * 38;
+            const unlocked = idx <= saveData.highestLevel;
+            const completed = idx < saveData.highestLevel;
+            const isCursor = idx === levelSelectCursor;
+            const isBoss = isBossLevel(idx);
+
+            // Circle background
+            if (isCursor) {
+              ctx.fillStyle = "rgba(255, 220, 80, 0.35)";
+              ctx.fillRect(lx - 10, ly - 8, 30, 30);
+              ctx.strokeStyle = "#ffdd66";
+              ctx.lineWidth = 2;
+              ctx.strokeRect(lx - 10, ly - 8, 30, 30);
+            }
+
+            // Level number circle
+            ctx.beginPath();
+            ctx.arc(lx + 5, ly + 6, 10, 0, Math.PI * 2);
+            if (completed) {
+              ctx.fillStyle = isBoss ? "#ee6644" : "#66bb55";
+            } else if (unlocked) {
+              ctx.fillStyle = "#555";
+            } else {
+              ctx.fillStyle = "#333";
+            }
+            ctx.fill();
+
+            // Level number
+            ctx.fillStyle = unlocked ? "#fff" : "#666";
+            ctx.font = "bold 9px monospace";
+            ctx.fillText(String(idx + 1), lx + 5, ly + 10);
+
+            // Stars
+            if (completed && saveData.levelStars[idx] > 0) {
+              const stars = saveData.levelStars[idx];
+              ctx.fillStyle = "#ffdd44";
+              ctx.font = "7px monospace";
+              ctx.fillText("\u2605".repeat(stars), lx + 5, ly + 20);
+            }
+          }
+        }
+
+        ctx.fillStyle = "#888";
+        ctx.font = "8px monospace";
+        ctx.fillText("Arrows to navigate, Space to play, ESC to back", cx, canvas.height - 15);
+        ctx.textAlign = "left";
       }
 
       function drawCharSelect() {
@@ -2209,17 +2495,32 @@
       }
 
       function toggleFullscreen() {
+        const wrap = document.getElementById("wrap");
         if (!document.fullscreenElement) {
-          canvas.requestFullscreen?.();
+          (wrap.requestFullscreen || wrap.webkitRequestFullscreen || function(){}).call(wrap);
         } else {
-          document.exitFullscreen?.();
+          (document.exitFullscreen || document.webkitExitFullscreen || function(){}).call(document);
         }
-        setCanvasScale();
+        setTimeout(setCanvasScale, 100);
+      }
+
+      // Auto-enter fullscreen on first touch (mobile)
+      let hasAutoFullscreened = false;
+      function tryAutoFullscreen() {
+        if (hasAutoFullscreened) return;
+        hasAutoFullscreened = true;
+        const isMobile = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+        if (isMobile && !document.fullscreenElement) {
+          const wrap = document.getElementById("wrap");
+          (wrap.requestFullscreen || wrap.webkitRequestFullscreen || function(){}).call(wrap);
+          setTimeout(setCanvasScale, 100);
+        }
       }
 
       // === INPUT HANDLERS ===
       function handleKeyDown(e) {
-        if (!audioCtx) getAudioCtx(); // init audio on first input
+        if (!audioCtx) getAudioCtx();
+        tryAutoFullscreen();
         if (!keys[e.code]) {
           pressed[e.code] = true;
         }
@@ -2227,9 +2528,6 @@
 
         if (e.code === "KeyF") {
           toggleFullscreen();
-        }
-        if (e.code === "Escape" && document.fullscreenElement) {
-          document.exitFullscreen?.();
         }
       }
 
@@ -2249,6 +2547,7 @@
         el.addEventListener("touchstart", (e) => {
           e.preventDefault();
           if (!audioCtx) getAudioCtx();
+          tryAutoFullscreen();
           touchState[code] = true; keys[code] = true; pressed[code] = true;
         }, { passive: false });
         el.addEventListener("touchend", (e) => {
@@ -2273,14 +2572,52 @@
 
         if (state === "title") {
           e.preventDefault();
-          pressed["Space"] = true;
+          tryAutoFullscreen();
+          if (titlePage === 1) {
+            // How-to-play: any tap goes back
+            titlePage = 0; haptic();
+          } else {
+            // Detect which menu option was tapped
+            const menuY = 180;
+            const options = saveData.highestLevel > 0 ? 3 : 2;
+            for (let i = 0; i < options; i++) {
+              const y = menuY + i * 32;
+              if (ty >= y - 10 && ty <= y + 14) {
+                titleMenuSel = i;
+                pressed["Space"] = true;
+                haptic();
+                break;
+              }
+            }
+          }
+        } else if (state === "levelSelect") {
+          e.preventDefault();
+          // Tap on level circles
+          const cx2 = canvas.width / 2;
+          for (let w = 0; w < 3; w++) {
+            const wy = 65 + w * 130;
+            for (let l = 0; l < 10; l++) {
+              const idx = w * 10 + l;
+              if (idx > saveData.highestLevel) continue;
+              const col = l % 5;
+              const row = Math.floor(l / 5);
+              const lx = cx2 - 75 + col * 38;
+              const ly = wy + 16 + row * 38;
+              if (tx >= lx - 12 && tx <= lx + 22 && ty >= ly - 10 && ty <= ly + 24) {
+                levelSelectCursor = idx;
+                pressed["Space"] = true;
+                haptic();
+                break;
+              }
+            }
+          }
         } else if (state === "charSelect") {
           e.preventDefault();
           const startX = (canvas.width - (4 * 40)) / 2 + 12;
           const charY = 200;
           for (let i = 0; i < 4; i++) {
-            const cx = startX + i * 40;
-            if (tx >= cx - 10 && tx <= cx + 26 && ty >= charY - 15 && ty <= charY + 45) {
+            const ccx = startX + i * 40;
+            if (tx >= ccx - 10 && tx <= ccx + 26 && ty >= charY - 15 && ty <= charY + 45) {
               selectedChar = i;
               haptic();
             }
@@ -2293,7 +2630,6 @@
           pressed["KeyR"] = true;
         } else if (state === "paused") {
           e.preventDefault();
-          // Top half = resume, bottom half = restart
           if (ty < canvas.height / 2) pressed["Escape"] = true;
           else pressed["KeyR"] = true;
         }
@@ -2351,7 +2687,7 @@
 
       // === INIT ===
       const tilemap = new Image();
-      tilemap.src = "Default/Tilemap/tilemap_packed.png";
+      tilemap.src = "https://remix.gg/blob/l8nDNl52fBh1/tilemap_packed-S2Ji99GXWp-ykLyQ6Lxb1TQDr9gQXfRkhwlTm3Lu5.webp?oaZK";
 
       let lastTime = 0;
 
